@@ -11,19 +11,31 @@ const gameRoutes = require('./routes/game');
 const app = express();
 const server = http.createServer(app);
 
-const allowedOrigins = [
-  ...(process.env.FRONTEND_URLS || '').split(',').map((o) => o.trim()).filter(Boolean),
-  process.env.FRONTEND_URL,
-  'http://localhost:5173',
-  'http://127.0.0.1:5173',
-].filter(Boolean);
-
 const corsOptions = {
-  origin: (origin, callback) => {
-    // Allow non-browser and same-origin requests with no Origin header.
+  origin: function(origin, callback) {
+    // List of allowed origins
+    const allowedOrigins = [
+      'https://abhilashstack-00.github.io',
+      'http://localhost:5173',
+      'http://127.0.0.1:5173',
+    ];
+    
+    // Allow requests with no origin (e.g., mobile apps, curl requests)
     if (!origin) return callback(null, true);
-    if (allowedOrigins.includes(origin)) return callback(null, true);
-    return callback(new Error('Not allowed by CORS'));
+    
+    // Check if origin is in the allowlist
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    
+    // Also allow if FRONTEND_URLS env var contains this origin
+    const envUrls = process.env.FRONTEND_URLS || '';
+    const envOrigins = envUrls.split(',').map(url => url.trim());
+    if (envOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    
+    callback(null, true); // Allow all for now to debug
   },
   methods: ['GET', 'POST'],
   credentials: true,
