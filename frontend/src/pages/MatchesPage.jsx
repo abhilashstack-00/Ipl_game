@@ -57,7 +57,8 @@ export default function MatchesPage() {
   }
 
   return (
-    <div className="max-w-5xl mx-auto px-4 py-8 animate-fade-in">
+    <div className="min-h-screen w-full px-3 sm:px-4 py-6 sm:py-8 animate-fade-in">
+      <div className="max-w-5xl mx-auto">
       <div className="flex items-center justify-between flex-wrap gap-3 mb-6">
         <div>
           <SectionTitle className="text-3xl">📅 IPL 2025 Schedule</SectionTitle>
@@ -276,6 +277,7 @@ export default function MatchesPage() {
           </div>
         )}
       </Modal>
+      </div>
     </div>
   )
 }

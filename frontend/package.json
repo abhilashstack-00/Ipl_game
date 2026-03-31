@@ -1,7 +1,7 @@
 {
   "name": "ipl-game-frontend",
   "version": "1.0.0",
-  "homepage": "https://YOUR_GITHUB_USERNAME.github.io/ipl-game",
+  "homepage": "https://abhilashstack-00.github.io/Ipl_game",
   "type": "module",
   "scripts": {
     "dev": "vite",

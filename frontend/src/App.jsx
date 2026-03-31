@@ -33,7 +33,7 @@ function AppContent() {
   return (
     <>
       <Header />
-      <main>
+      <main className="min-h-screen">
         <Routes>
           <Route path="/login" element={<LoginPage />} />
           <Route path="/register" element={<RegisterPage />} />

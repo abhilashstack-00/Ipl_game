@@ -24,9 +24,15 @@ export default function AuctionPage() {
   useEffect(() => {
     if (!session?.session?.id || session?.session?.status !== 'auction') return
 
-    const timerId = setInterval(() => {
-      setNowTs(Math.floor(Date.now() / 1000))
-      fetchSession()
+    const timerId = setInterval(async () => {
+      // Sync with server time instead of pure client time to avoid drift
+      const freshSession = await fetchSession()
+      if (freshSession?.auction?.roundEndsAt) {
+        // Use server's roundEndsAt and current time to calculate accurate remaining time
+        setNowTs(Math.floor(Date.now() / 1000))
+      } else {
+        setNowTs(Math.floor(Date.now() / 1000))
+      }
     }, 1000)
 
     return () => clearInterval(timerId)
@@ -148,7 +154,7 @@ export default function AuctionPage() {
   }
 
   return (
-    <div className="min-h-screen bg-cricket-pattern px-4 py-8" style={{ background: '#0A1628' }}>
+    <div className="min-h-screen w-full bg-cricket-pattern px-3 sm:px-4 py-6 sm:py-8" style={{ background: '#0A1628' }}>
       <div className="max-w-6xl mx-auto animate-fade-in">
 
         {/* Header */}

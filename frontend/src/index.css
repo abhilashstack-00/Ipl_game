@@ -3,6 +3,10 @@
 @tailwind utilities;
 
 @layer base {
+  html, body, #root {
+    height: 100%;
+    width: 100%;
+  }
   body {
     @apply bg-ipl-deep-blue text-white font-rajdhani;
     min-height: 100vh;
