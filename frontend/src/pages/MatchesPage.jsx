@@ -8,6 +8,7 @@ import { getTeam } from '../utils/iplData'
 function MatchStatusBadge({ match }) {
   const today = new Date().toISOString().split('T')[0]
   if (match.processed || match.result) return <span className="badge badge-green">✓ Done</span>
+  if (match.suggestedResult?.winner || match.suggestedResult?.isDraw) return <span className="badge badge-gold">Result Ready</span>
   if (match.date < today) return <span className="badge badge-orange live-pulse">● Live</span>
   if (match.date === today) return <span className="badge" style={{ background: 'rgba(255,215,0,0.15)', color: '#FFD700', border: '1px solid rgba(255,215,0,0.4)' }}>Today</span>
   return <span className="badge badge-blue">Upcoming</span>
@@ -154,6 +155,7 @@ export default function MatchesPage() {
                     {isContestMatch && !done && <span className="badge badge-orange">⚔️ Contest</span>}
                     {bothSame && <span className="badge badge-blue">Both Yours</span>}
                     {isSimulated && <span className="badge badge-gold">Simulated</span>}
+                    {match.liveStatus && <span className="badge badge-blue">{match.liveStatus}</span>}
                   </div>
                 </div>
 
@@ -175,6 +177,14 @@ export default function MatchesPage() {
                     ) : (
                       <span className="badge badge-gold text-center">Processed</span>
                     )
+                  ) : isContestMatch && (match.suggestedResult?.winner || match.suggestedResult?.isDraw) ? (
+                    <button
+                      className="btn-gold py-1.5 px-3 text-xs"
+                      onClick={() => handleProcess(match, match.suggestedResult?.winner || null, !!match.suggestedResult?.isDraw)}
+                      disabled={processing === match.id}
+                    >
+                      {processing === match.id ? <Spinner size="sm" /> : 'Apply Live Result'}
+                    </button>
                   ) : isContestMatch && isLive ? (
                     <>
                       {!isSimulated ? (

@@ -3,6 +3,7 @@ const { v4: uuidv4 } = require('uuid');
 const db = require('../db/database');
 const { authMiddleware } = require('../middleware/auth');
 const { IPL_TEAMS, MATCH_SCHEDULE } = require('../db/iplData');
+const { getEffectiveSchedule } = require('../services/liveScores');
 
 const router = express.Router();
 const MAX_TEAMS = 5;
@@ -453,23 +454,26 @@ router.post('/finalize-auction', authMiddleware, (req, res) => {
 });
 
 // GET /api/game/matches/:sessionId
-router.get('/matches/:sessionId', authMiddleware, (req, res) => {
+router.get('/matches/:sessionId', authMiddleware, async (req, res) => {
   try {
     const { sessionId } = req.params;
     const state = getSessionState(sessionId, req.user.id);
     if (!state) return res.status(404).json({ error: 'Session not found' });
 
+    const effectiveSchedule = await getEffectiveSchedule();
+
     const matchResultsDb = db.prepare('SELECT * FROM match_results WHERE session_id = ?').all(sessionId);
     const resultByMatchId = new Map(matchResultsDb.map(r => [r.match_id, r]));
     const allOwnedTeams = state.players.flatMap(p => p.teams.map(t => ({ teamId: t.teamId, userId: p.id, username: p.username })));
 
-    const enrichedMatches = MATCH_SCHEDULE.map(m => {
+    const enrichedMatches = effectiveSchedule.map(m => {
       const t1Owner = allOwnedTeams.find(o => o.teamId === m.team1);
       const t2Owner = allOwnedTeams.find(o => o.teamId === m.team2);
       const processedResult = resultByMatchId.get(m.id) || null;
       return {
         ...m,
         result: processedResult ? { winner: processedResult.winner_team, isDraw: !!processedResult.is_draw } : null,
+        suggestedResult: !processedResult ? (m.suggestedResult || m.result || null) : null,
         team1Owner: t1Owner || null,
         team2Owner: t2Owner || null,
         isContest: t1Owner && t2Owner && t1Owner.userId !== t2Owner.userId,
@@ -486,14 +490,15 @@ router.get('/matches/:sessionId', authMiddleware, (req, res) => {
 });
 
 // POST /api/game/process-match - apply match result and award points
-router.post('/process-match', authMiddleware, (req, res) => {
+router.post('/process-match', authMiddleware, async (req, res) => {
   try {
     const { sessionId, matchId, winnerTeamId, isDraw } = req.body;
 
     const already = db.prepare('SELECT id FROM match_results WHERE session_id = ? AND match_id = ?').get(sessionId, matchId);
     if (already) return res.status(400).json({ error: 'Match already processed' });
 
-    const match = MATCH_SCHEDULE.find(m => m.id === matchId);
+    const effectiveSchedule = await getEffectiveSchedule();
+    const match = effectiveSchedule.find(m => m.id === matchId);
     if (!match) return res.status(404).json({ error: 'Match not found' });
 
     const state = getSessionState(sessionId, req.user.id);
