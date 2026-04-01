@@ -18,7 +18,8 @@ api.interceptors.response.use(
     if (err.response?.status === 401) {
       localStorage.removeItem('ipl_token')
       localStorage.removeItem('ipl_user')
-      window.location.hash = '#/login'
+      const repoPrefix = window.location.hostname.endsWith('github.io') ? '/Ipl_game/' : '/'
+      window.location.replace(`${window.location.origin}${repoPrefix}#/login`)
     }
     return Promise.reject(err)
   }

@@ -17,7 +17,11 @@ export default function RegisterPage() {
     setLoading(true)
     try {
       await register(form.username, form.password)
-      navigate('/lobby')
+      if (window.location.hostname.endsWith('github.io')) {
+        window.location.replace(`${window.location.origin}/Ipl_game/#/lobby`)
+      } else {
+        navigate('/lobby')
+      }
     } catch (err) {
       setError(err.response?.data?.error || 'Registration failed')
     } finally {
