@@ -18,7 +18,7 @@ api.interceptors.response.use(
     if (err.response?.status === 401) {
       localStorage.removeItem('ipl_token')
       localStorage.removeItem('ipl_user')
-      window.location.href = '/login'
+      window.location.hash = '#/login'
     }
     return Promise.reject(err)
   }
