@@ -330,10 +330,10 @@ router.post('/home-team', authMiddleware, (req, res) => {
 
     let conflict = false;
     if (otherSelection && otherSelection.team_id === teamId) {
-      // Both want same team â†’ bidding war, don't auto-assign
+      // Both want same team GåÆ bidding war, don't auto-assign
       conflict = true;
     } else {
-      // No conflict â†’ assign for free
+      // No conflict GåÆ assign for free
       db.prepare('INSERT INTO team_ownerships (id, session_id, user_id, team_id, price_paid, is_home_team) VALUES (?, ?, ?, ?, 0, 1)').run(uuidv4(), sessionId, req.user.id, teamId);
     }
 
@@ -464,12 +464,16 @@ router.get('/matches/:sessionId', authMiddleware, async (req, res) => {
 
     const matchResultsDb = db.prepare('SELECT * FROM match_results WHERE session_id = ?').all(sessionId);
     const resultByMatchId = new Map(matchResultsDb.map(r => [r.match_id, r]));
+    const matchChoicesDb = db.prepare('SELECT * FROM match_choices WHERE session_id = ?').all(sessionId);
+    const choiceByMatchId = new Map(matchChoicesDb.map(r => [r.match_id, r]));
     const allOwnedTeams = state.players.flatMap(p => p.teams.map(t => ({ teamId: t.teamId, userId: p.id, username: p.username })));
 
-    const enrichedMatches = effectiveSchedule.map(m => {
+    const enrichedMatches = effectiveSchedule.map((m) => {
       const t1Owner = allOwnedTeams.find(o => o.teamId === m.team1);
       const t2Owner = allOwnedTeams.find(o => o.teamId === m.team2);
       const processedResult = resultByMatchId.get(m.id) || null;
+      const choice = choiceByMatchId.get(m.id) || null;
+
       return {
         ...m,
         result: processedResult ? { winner: processedResult.winner_team, isDraw: !!processedResult.is_draw } : null,
@@ -478,11 +482,67 @@ router.get('/matches/:sessionId', authMiddleware, async (req, res) => {
         team2Owner: t2Owner || null,
         isContest: t1Owner && t2Owner && t1Owner.userId !== t2Owner.userId,
         bothSameUser: t1Owner && t2Owner && t1Owner.userId === t2Owner.userId,
+        matchChoice: choice ? {
+          chosenTeamId: choice.chosen_team_id,
+          chosenUserId: choice.chosen_user_id,
+          opponentUserId: choice.opponent_user_id,
+        } : null,
         processed: !!processedResult,
       };
     });
 
     res.json({ matches: enrichedMatches, results: matchResultsDb });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// POST /api/game/match-choice
+router.post('/match-choice', authMiddleware, async (req, res) => {
+  try {
+    const { sessionId, matchId, chosenTeamId } = req.body;
+
+    const effectiveSchedule = await getEffectiveSchedule();
+    const match = effectiveSchedule.find(m => m.id === matchId);
+    if (!match) return res.status(404).json({ error: 'Match not found' });
+    if (chosenTeamId !== match.team1 && chosenTeamId !== match.team2) {
+      return res.status(400).json({ error: 'Invalid team choice' });
+    }
+
+    const state = getSessionState(sessionId, req.user.id);
+    if (!state) return res.status(404).json({ error: 'Session not found' });
+
+    const allOwnedTeams = state.players.flatMap(p => p.teams.map(t => ({ teamId: t.teamId, userId: p.id })));
+    const t1Owner = allOwnedTeams.find(o => o.teamId === match.team1);
+    const t2Owner = allOwnedTeams.find(o => o.teamId === match.team2);
+
+    if (!t1Owner || !t2Owner) return res.status(400).json({ error: 'Both teams must be owned before choosing a side' });
+    if (t1Owner.userId !== t2Owner.userId) return res.status(400).json({ error: 'This match is already a normal contest' });
+    if (t1Owner.userId !== req.user.id) return res.status(403).json({ error: 'Only the team owner can choose a side' });
+
+    const opponent = state.players.find(p => p.id !== req.user.id);
+    if (!opponent) return res.status(400).json({ error: 'Opponent player not found' });
+
+    db.prepare(`
+      INSERT INTO match_choices (session_id, match_id, chosen_team_id, chosen_user_id, opponent_user_id)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(session_id, match_id) DO UPDATE SET
+        chosen_team_id = excluded.chosen_team_id,
+        chosen_user_id = excluded.chosen_user_id,
+        opponent_user_id = excluded.opponent_user_id
+    `).run(sessionId, matchId, chosenTeamId, req.user.id, opponent.id);
+
+    const newState = getSessionState(sessionId, req.user.id);
+    res.json({
+      session: newState,
+      choice: {
+        matchId,
+        chosenTeamId,
+        chosenUserId: req.user.id,
+        opponentUserId: opponent.id,
+      },
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });
@@ -508,21 +568,64 @@ router.post('/process-match', authMiddleware, async (req, res) => {
     const t2Owner = allOwnedTeams.find(o => o.teamId === match.team2);
 
     if (!t1Owner || !t2Owner) return res.status(400).json({ error: 'Both teams must be owned by players' });
-    if (t1Owner.userId === t2Owner.userId) return res.status(400).json({ error: 'Both teams owned by same player â€” no contest' });
 
-    let winnerId, loserId, winnerTeam, loserTeam, pointsW, pointsL;
-    if (isDraw) {
-      pointsW = 1; pointsL = 1;
-      winnerId = t1Owner.userId; loserId = t2Owner.userId;
-      winnerTeam = match.team1; loserTeam = match.team2;
+    const bothSameUser = t1Owner.userId === t2Owner.userId;
+    const matchChoice = bothSameUser
+      ? db.prepare('SELECT * FROM match_choices WHERE session_id = ? AND match_id = ?').get(sessionId, matchId)
+      : null;
+
+    if (bothSameUser && !matchChoice) {
+      return res.status(400).json({ error: 'Choose a team first' });
+    }
+
+    let winnerId;
+    let loserId;
+    let winnerTeam;
+    let loserTeam;
+    let pointsW;
+    let pointsL;
+
+    if (bothSameUser) {
+      const chosenTeamId = matchChoice.chosen_team_id;
+      const chosenUserId = matchChoice.chosen_user_id;
+      const opponentUserId = matchChoice.opponent_user_id;
+      const loserTeamId = winnerTeamId === match.team1 ? match.team2 : match.team1;
+      const actualWinnerUserId = winnerTeamId === chosenTeamId ? chosenUserId : opponentUserId;
+      const actualLoserUserId = actualWinnerUserId === chosenUserId ? opponentUserId : chosenUserId;
+
+      winnerId = actualWinnerUserId;
+      loserId = actualLoserUserId;
+      winnerTeam = winnerTeamId;
+      loserTeam = loserTeamId;
+
+      if (isDraw) {
+        pointsW = 1;
+        pointsL = 1;
+        db.prepare('UPDATE users SET points = points + 1, draws = draws + 1, matches_played = matches_played + 1 WHERE id = ?').run(chosenUserId);
+        db.prepare('UPDATE users SET points = points + 1, draws = draws + 1, matches_played = matches_played + 1 WHERE id = ?').run(opponentUserId);
+      } else {
+        pointsW = 2;
+        pointsL = 0;
+        db.prepare('UPDATE users SET points = points + 2, wins = wins + 1, matches_played = matches_played + 1 WHERE id = ?').run(actualWinnerUserId);
+        db.prepare('UPDATE users SET losses = losses + 1, matches_played = matches_played + 1 WHERE id = ?').run(actualLoserUserId);
+      }
+    } else if (isDraw) {
+      pointsW = 1;
+      pointsL = 1;
+      winnerId = t1Owner.userId;
+      loserId = t2Owner.userId;
+      winnerTeam = match.team1;
+      loserTeam = match.team2;
       db.prepare('UPDATE users SET points = points + 1, draws = draws + 1, matches_played = matches_played + 1 WHERE id = ?').run(t1Owner.userId);
       db.prepare('UPDATE users SET points = points + 1, draws = draws + 1, matches_played = matches_played + 1 WHERE id = ?').run(t2Owner.userId);
     } else {
       const loserTeamId = winnerTeamId === match.team1 ? match.team2 : match.team1;
       winnerId = allOwnedTeams.find(o => o.teamId === winnerTeamId)?.userId;
       loserId = allOwnedTeams.find(o => o.teamId === loserTeamId)?.userId;
-      winnerTeam = winnerTeamId; loserTeam = loserTeamId;
-      pointsW = 2; pointsL = 0;
+      winnerTeam = winnerTeamId;
+      loserTeam = loserTeamId;
+      pointsW = 2;
+      pointsL = 0;
       db.prepare('UPDATE users SET points = points + 2, wins = wins + 1, matches_played = matches_played + 1 WHERE id = ?').run(winnerId);
       db.prepare('UPDATE users SET losses = losses + 1, matches_played = matches_played + 1 WHERE id = ?').run(loserId);
     }
