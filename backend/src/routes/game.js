@@ -508,23 +508,58 @@ router.post('/process-match', authMiddleware, async (req, res) => {
     const t2Owner = allOwnedTeams.find(o => o.teamId === match.team2);
 
     if (!t1Owner || !t2Owner) return res.status(400).json({ error: 'Both teams must be owned by players' });
-    if (t1Owner.userId === t2Owner.userId) return res.status(400).json({ error: 'Both teams owned by same player — no contest' });
+
+    // Check if both teams owned by same user
+    const bothSameUser = t1Owner.userId === t2Owner.userId;
 
     let winnerId, loserId, winnerTeam, loserTeam, pointsW, pointsL;
-    if (isDraw) {
-      pointsW = 1; pointsL = 1;
-      winnerId = t1Owner.userId; loserId = t2Owner.userId;
-      winnerTeam = match.team1; loserTeam = match.team2;
-      db.prepare('UPDATE users SET points = points + 1, draws = draws + 1, matches_played = matches_played + 1 WHERE id = ?').run(t1Owner.userId);
-      db.prepare('UPDATE users SET points = points + 1, draws = draws + 1, matches_played = matches_played + 1 WHERE id = ?').run(t2Owner.userId);
+    let message = '';
+
+    if (bothSameUser) {
+      // Same user owns both teams - they choose which team they support
+      if (!winnerTeamId || (winnerTeamId !== match.team1 && winnerTeamId !== match.team2)) {
+        return res.status(400).json({ error: 'Invalid team selection' });
+      }
+
+      if (isDraw) {
+        pointsW = 1;
+        pointsL = 0;
+        winnerId = t1Owner.userId;
+        loserId = null;
+        winnerTeam = winnerTeamId;
+        loserTeam = winnerTeamId === match.team1 ? match.team2 : match.team1;
+        db.prepare('UPDATE users SET points = points + 1, draws = draws + 1, matches_played = matches_played + 1 WHERE id = ?').run(t1Owner.userId);
+        message = `🤝 Draw! You supported both teams equally. 1 point awarded.`;
+      } else {
+        pointsW = 2;
+        pointsL = 0;
+        winnerId = t1Owner.userId;
+        loserId = null;
+        winnerTeam = winnerTeamId;
+        loserTeam = winnerTeamId === match.team1 ? match.team2 : match.team1;
+        db.prepare('UPDATE users SET points = points + 2, wins = wins + 1, matches_played = matches_played + 1 WHERE id = ?').run(t1Owner.userId);
+        const chosen = IPL_TEAMS.find(t => t.id === winnerTeamId);
+        message = `✅ You supported ${chosen?.short || winnerTeamId} and they won! 2 points awarded.`;
+      }
     } else {
-      const loserTeamId = winnerTeamId === match.team1 ? match.team2 : match.team1;
-      winnerId = allOwnedTeams.find(o => o.teamId === winnerTeamId)?.userId;
-      loserId = allOwnedTeams.find(o => o.teamId === loserTeamId)?.userId;
-      winnerTeam = winnerTeamId; loserTeam = loserTeamId;
-      pointsW = 2; pointsL = 0;
-      db.prepare('UPDATE users SET points = points + 2, wins = wins + 1, matches_played = matches_played + 1 WHERE id = ?').run(winnerId);
-      db.prepare('UPDATE users SET losses = losses + 1, matches_played = matches_played + 1 WHERE id = ?').run(loserId);
+      // Different users own the teams - normal contest
+      if (isDraw) {
+        pointsW = 1; pointsL = 1;
+        winnerId = t1Owner.userId; loserId = t2Owner.userId;
+        winnerTeam = match.team1; loserTeam = match.team2;
+        db.prepare('UPDATE users SET points = points + 1, draws = draws + 1, matches_played = matches_played + 1 WHERE id = ?').run(t1Owner.userId);
+        db.prepare('UPDATE users SET points = points + 1, draws = draws + 1, matches_played = matches_played + 1 WHERE id = ?').run(t2Owner.userId);
+        message = 'Draw! Both managers get 1 point.';
+      } else {
+        const loserTeamId = winnerTeamId === match.team1 ? match.team2 : match.team1;
+        winnerId = allOwnedTeams.find(o => o.teamId === winnerTeamId)?.userId;
+        loserId = allOwnedTeams.find(o => o.teamId === loserTeamId)?.userId;
+        winnerTeam = winnerTeamId; loserTeam = loserTeamId;
+        pointsW = 2; pointsL = 0;
+        db.prepare('UPDATE users SET points = points + 2, wins = wins + 1, matches_played = matches_played + 1 WHERE id = ?').run(winnerId);
+        db.prepare('UPDATE users SET losses = losses + 1, matches_played = matches_played + 1 WHERE id = ?').run(loserId);
+        message = 'Contest resolved! Winner gets 2 points.';
+      }
     }
 
     db.prepare(`
@@ -533,7 +568,7 @@ router.post('/process-match', authMiddleware, async (req, res) => {
     `).run(uuidv4(), sessionId, matchId, winnerTeam, loserTeam, winnerId, loserId, pointsW, pointsL, isDraw ? 1 : 0);
 
     const newState = getSessionState(sessionId, req.user.id);
-    res.json({ session: newState, message: isDraw ? 'Draw! Both players get 1 point.' : 'Match processed! Winner gets 2 points.' });
+    res.json({ session: newState, message });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });

@@ -220,6 +220,13 @@ export default function MatchesPage() {
                     </>
                   ) : isContestMatch && !isLive ? (
                     <span className="text-xs text-gray-500 text-center">Match not started</span>
+                  ) : bothSame && isLive ? (
+                    <button
+                      className="btn-success py-1.5 px-3 text-xs"
+                      onClick={() => setSelectedMatch(match)}
+                    >
+                      ⭐ Choose Team
+                    </button>
                   ) : bothSame ? (
                     <span className="text-xs text-gray-500 text-center">No contest</span>
                   ) : (
@@ -243,47 +250,94 @@ export default function MatchesPage() {
       <Modal
         open={!!selectedMatch && !simulResult}
         onClose={() => setSelectedMatch(null)}
-        title="Enter Match Result"
+        title={selectedMatch?.bothSameUser ? "Choose Your Team" : "Enter Match Result"}
       >
         {selectedMatch && (
           <div>
-            <div className="flex items-center justify-around mb-6">
-              <div className="text-center">
-                <TeamBadge teamId={selectedMatch.team1} size="lg" />
-                <div className="mt-2 font-bold">{getTeam(selectedMatch.team1).name}</div>
-                <button
-                  className="btn-gold py-2 px-5 text-sm mt-3"
-                  onClick={() => handleProcess(selectedMatch, selectedMatch.team1)}
-                  disabled={!!processing}
-                >
-                  {processing ? <Spinner size="sm" /> : 'Won'}
-                </button>
-              </div>
-              <div className="text-center">
-                <div className="font-teko text-3xl text-gray-500">VS</div>
-                <button
-                  className="btn-outline py-2 px-4 text-sm mt-3 block"
-                  onClick={() => handleProcess(selectedMatch, null, true)}
-                  disabled={!!processing}
-                >
-                  Draw
-                </button>
-              </div>
-              <div className="text-center">
-                <TeamBadge teamId={selectedMatch.team2} size="lg" />
-                <div className="mt-2 font-bold">{getTeam(selectedMatch.team2).name}</div>
-                <button
-                  className="btn-gold py-2 px-5 text-sm mt-3"
-                  onClick={() => handleProcess(selectedMatch, selectedMatch.team2)}
-                  disabled={!!processing}
-                >
-                  {processing ? <Spinner size="sm" /> : 'Won'}
-                </button>
-              </div>
-            </div>
-            <Alert type="info">
-              Winner gets +2 pts · Draw gives +1 pt each · Loser gets 0
-            </Alert>
+            {selectedMatch.bothSameUser ? (
+              <>
+                <Alert type="info" className="mb-4">
+                  ⭐ You own both teams in this match. Choose which team to support and get points if they win!
+                </Alert>
+                <div className="flex items-center justify-around mb-6">
+                  <div className="text-center">
+                    <TeamBadge teamId={selectedMatch.team1} size="lg" />
+                    <div className="mt-2 font-bold">{getTeam(selectedMatch.team1).name}</div>
+                    <button
+                      className="btn-gold py-2 px-5 text-sm mt-3"
+                      onClick={() => handleProcess(selectedMatch, selectedMatch.team1)}
+                      disabled={!!processing}
+                    >
+                      {processing ? <Spinner size="sm" /> : 'Support This Team'}
+                    </button>
+                  </div>
+                  <div className="text-center">
+                    <div className="font-teko text-3xl text-gray-500">OR</div>
+                    <button
+                      className="btn-outline py-2 px-4 text-sm mt-3 block"
+                      onClick={() => handleProcess(selectedMatch, null, true)}
+                      disabled={!!processing}
+                    >
+                      Draw
+                    </button>
+                  </div>
+                  <div className="text-center">
+                    <TeamBadge teamId={selectedMatch.team2} size="lg" />
+                    <div className="mt-2 font-bold">{getTeam(selectedMatch.team2).name}</div>
+                    <button
+                      className="btn-gold py-2 px-5 text-sm mt-3"
+                      onClick={() => handleProcess(selectedMatch, selectedMatch.team2)}
+                      disabled={!!processing}
+                    >
+                      {processing ? <Spinner size="sm" /> : 'Support This Team'}
+                    </button>
+                  </div>
+                </div>
+                <Alert type="success">
+                  ✓ Win Support: +2 pts · Draw Support: +1 pt
+                </Alert>
+              </>
+            ) : (
+              <>
+                <div className="flex items-center justify-around mb-6">
+                  <div className="text-center">
+                    <TeamBadge teamId={selectedMatch.team1} size="lg" />
+                    <div className="mt-2 font-bold">{getTeam(selectedMatch.team1).name}</div>
+                    <button
+                      className="btn-gold py-2 px-5 text-sm mt-3"
+                      onClick={() => handleProcess(selectedMatch, selectedMatch.team1)}
+                      disabled={!!processing}
+                    >
+                      {processing ? <Spinner size="sm" /> : 'Won'}
+                    </button>
+                  </div>
+                  <div className="text-center">
+                    <div className="font-teko text-3xl text-gray-500">VS</div>
+                    <button
+                      className="btn-outline py-2 px-4 text-sm mt-3 block"
+                      onClick={() => handleProcess(selectedMatch, null, true)}
+                      disabled={!!processing}
+                    >
+                      Draw
+                    </button>
+                  </div>
+                  <div className="text-center">
+                    <TeamBadge teamId={selectedMatch.team2} size="lg" />
+                    <div className="mt-2 font-bold">{getTeam(selectedMatch.team2).name}</div>
+                    <button
+                      className="btn-gold py-2 px-5 text-sm mt-3"
+                      onClick={() => handleProcess(selectedMatch, selectedMatch.team2)}
+                      disabled={!!processing}
+                    >
+                      {processing ? <Spinner size="sm" /> : 'Won'}
+                    </button>
+                  </div>
+                </div>
+                <Alert type="info">
+                  Winner gets +2 pts · Draw gives +1 pt each · Loser gets 0
+                </Alert>
+              </>
+            )}
           </div>
         )}
       </Modal>
