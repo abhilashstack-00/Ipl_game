@@ -83,6 +83,17 @@ function init() {
       FOREIGN KEY(session_id) REFERENCES game_sessions(id)
     );
 
+    CREATE TABLE IF NOT EXISTS match_choices (
+      session_id TEXT,
+      match_id TEXT,
+      chosen_team_id TEXT,
+      chosen_user_id TEXT,
+      opponent_user_id TEXT,
+      created_at INTEGER DEFAULT (strftime('%s','now')),
+      PRIMARY KEY(session_id, match_id),
+      FOREIGN KEY(session_id) REFERENCES game_sessions(id)
+    );
+
     CREATE TABLE IF NOT EXISTS home_team_selections (
       session_id TEXT,
       user_id TEXT,

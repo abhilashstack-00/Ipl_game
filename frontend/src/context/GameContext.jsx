@@ -136,6 +136,13 @@ export function GameProvider({ children }) {
     return r.data
   }
 
+  const chooseMatchTeam = async (sessionId, matchId, chosenTeamId) => {
+    const r = await api.post('/game/match-choice', { sessionId, matchId, chosenTeamId })
+    setSession(r.data.session)
+    await fetchMatches(sessionId)
+    return r.data
+  }
+
   const buyTeam = async (sessionId, teamId) => {
     const r = await api.post('/game/buy-team', { sessionId, teamId })
     setSession(r.data.session)
@@ -165,6 +172,7 @@ export function GameProvider({ children }) {
       fetchSession, fetchMatches, createSession, joinSession,
       leaveSession,
       selectHomeTeam, placeBid, buyTeam, finalizeAuction, processMatch,
+      chooseMatchTeam,
       addNotification,
     }}>
       {children}
