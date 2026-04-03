@@ -62,7 +62,7 @@ export default function MatchesPage() {
       <div className="max-w-5xl mx-auto">
       <div className="flex items-center justify-between flex-wrap gap-3 mb-6">
         <div>
-          <SectionTitle className="text-3xl">📅 IPL 2025 Schedule</SectionTitle>
+          <SectionTitle className="text-3xl">📅 IPL 2026 Schedule</SectionTitle>
           <p className="text-gray-400 text-sm mt-1">
             {(matches || []).filter(m => m.isContest && !m.processed).length} active contests · {(matches || []).filter(m => m.processed || m.result).length} completed
           </p>
