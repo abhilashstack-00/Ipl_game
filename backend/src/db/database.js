@@ -100,6 +100,18 @@ function init() {
       updated_at INTEGER DEFAULT (strftime('%s','now')),
       FOREIGN KEY(session_id) REFERENCES game_sessions(id)
     );
+
+    CREATE TABLE IF NOT EXISTS match_choices (
+      session_id TEXT NOT NULL,
+      match_id TEXT NOT NULL,
+      chosen_team_id TEXT NOT NULL,
+      chosen_user_id TEXT NOT NULL,
+      opponent_user_id TEXT NOT NULL,
+      created_at INTEGER DEFAULT (strftime('%s','now')),
+      updated_at INTEGER DEFAULT (strftime('%s','now')),
+      PRIMARY KEY (session_id, match_id),
+      FOREIGN KEY(session_id) REFERENCES game_sessions(id)
+    );
   `);
 
   // Migration for existing DBs created before session-level credits were introduced.
@@ -108,6 +120,21 @@ function init() {
   if (!hasCreditsCol) {
     db.exec('ALTER TABLE session_players ADD COLUMN credits INTEGER DEFAULT 100');
   }
+
+  // Migration for DBs created before same-owner match choice support.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS match_choices (
+      session_id TEXT NOT NULL,
+      match_id TEXT NOT NULL,
+      chosen_team_id TEXT NOT NULL,
+      chosen_user_id TEXT NOT NULL,
+      opponent_user_id TEXT NOT NULL,
+      created_at INTEGER DEFAULT (strftime('%s','now')),
+      updated_at INTEGER DEFAULT (strftime('%s','now')),
+      PRIMARY KEY (session_id, match_id),
+      FOREIGN KEY(session_id) REFERENCES game_sessions(id)
+    )
+  `);
 
   db.prepare('UPDATE session_players SET credits = 100 WHERE credits IS NULL').run();
 }
