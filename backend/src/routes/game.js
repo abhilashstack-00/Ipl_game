@@ -3,7 +3,7 @@ const { v4: uuidv4 } = require('uuid');
 const db = require('../db/database');
 const { authMiddleware } = require('../middleware/auth');
 const { IPL_TEAMS, MATCH_SCHEDULE } = require('../db/iplData');
-const { getEffectiveSchedule } = require('../services/liveScores');
+const { getEffectiveSchedule, getLiveDiagnostics } = require('../services/liveScores');
 
 const router = express.Router();
 const MAX_TEAMS = 5;
@@ -202,6 +202,134 @@ function getSessionState(sessionId, userId) {
   };
 }
 
+function applyMatchResultToSession({ sessionId, match, winnerTeamId, isDraw, actorUserId, strictChoice = true }) {
+  const already = db.prepare('SELECT id FROM match_results WHERE session_id = ? AND match_id = ?').get(sessionId, match.id);
+  if (already) return { ok: false, code: 'already-processed', error: 'Match already processed' };
+
+  if (!isDraw && winnerTeamId !== match.team1 && winnerTeamId !== match.team2) {
+    return { ok: false, code: 'invalid-winner', error: 'Invalid winner team for this match' };
+  }
+
+  const state = getSessionState(sessionId, actorUserId);
+  if (!state) return { ok: false, code: 'session-not-found', error: 'Session not found' };
+
+  const allOwnedTeams = state.players.flatMap(p => p.teams.map(t => ({ teamId: t.teamId, userId: p.id })));
+  const t1Owner = allOwnedTeams.find(o => o.teamId === match.team1);
+  const t2Owner = allOwnedTeams.find(o => o.teamId === match.team2);
+
+  if (!t1Owner || !t2Owner) {
+    return { ok: false, code: 'owners-missing', error: 'Both teams must be owned by players' };
+  }
+
+  const bothSameUser = t1Owner.userId === t2Owner.userId;
+  const matchChoice = bothSameUser
+    ? db.prepare('SELECT * FROM match_choices WHERE session_id = ? AND match_id = ?').get(sessionId, match.id)
+    : null;
+
+  if (bothSameUser && strictChoice && !matchChoice) {
+    return { ok: false, code: 'choice-required', error: 'Choose a team first' };
+  }
+
+  // Auto-processing skips same-user contests until a choice is made.
+  if (bothSameUser && !matchChoice) {
+    return { ok: false, code: 'skipped-choice-missing', error: 'Waiting for team choice' };
+  }
+
+  let winnerId;
+  let loserId;
+  let winnerTeam;
+  let loserTeam;
+  let pointsW;
+  let pointsL;
+
+  if (bothSameUser) {
+    const chosenTeamId = matchChoice.chosen_team_id;
+    const chosenUserId = matchChoice.chosen_user_id;
+    const opponentUserId = matchChoice.opponent_user_id;
+    const effectiveWinnerTeam = isDraw ? match.team1 : winnerTeamId;
+    const loserTeamId = effectiveWinnerTeam === match.team1 ? match.team2 : match.team1;
+    const actualWinnerUserId = isDraw
+      ? chosenUserId
+      : (effectiveWinnerTeam === chosenTeamId ? chosenUserId : opponentUserId);
+    const actualLoserUserId = isDraw
+      ? opponentUserId
+      : (actualWinnerUserId === chosenUserId ? opponentUserId : chosenUserId);
+
+    winnerId = actualWinnerUserId;
+    loserId = actualLoserUserId;
+    winnerTeam = effectiveWinnerTeam;
+    loserTeam = loserTeamId;
+
+    if (isDraw) {
+      pointsW = 1;
+      pointsL = 1;
+      db.prepare('UPDATE users SET points = points + 1, draws = draws + 1, matches_played = matches_played + 1 WHERE id = ?').run(chosenUserId);
+      db.prepare('UPDATE users SET points = points + 1, draws = draws + 1, matches_played = matches_played + 1 WHERE id = ?').run(opponentUserId);
+    } else {
+      pointsW = 2;
+      pointsL = 0;
+      db.prepare('UPDATE users SET points = points + 2, wins = wins + 1, matches_played = matches_played + 1 WHERE id = ?').run(actualWinnerUserId);
+      db.prepare('UPDATE users SET losses = losses + 1, matches_played = matches_played + 1 WHERE id = ?').run(actualLoserUserId);
+    }
+  } else if (isDraw) {
+    pointsW = 1;
+    pointsL = 1;
+    winnerId = t1Owner.userId;
+    loserId = t2Owner.userId;
+    winnerTeam = match.team1;
+    loserTeam = match.team2;
+    db.prepare('UPDATE users SET points = points + 1, draws = draws + 1, matches_played = matches_played + 1 WHERE id = ?').run(t1Owner.userId);
+    db.prepare('UPDATE users SET points = points + 1, draws = draws + 1, matches_played = matches_played + 1 WHERE id = ?').run(t2Owner.userId);
+  } else {
+    const loserTeamId = winnerTeamId === match.team1 ? match.team2 : match.team1;
+    winnerId = allOwnedTeams.find(o => o.teamId === winnerTeamId)?.userId;
+    loserId = allOwnedTeams.find(o => o.teamId === loserTeamId)?.userId;
+    winnerTeam = winnerTeamId;
+    loserTeam = loserTeamId;
+    pointsW = 2;
+    pointsL = 0;
+    db.prepare('UPDATE users SET points = points + 2, wins = wins + 1, matches_played = matches_played + 1 WHERE id = ?').run(winnerId);
+    db.prepare('UPDATE users SET losses = losses + 1, matches_played = matches_played + 1 WHERE id = ?').run(loserId);
+  }
+
+  db.prepare(`
+    INSERT INTO match_results (id, session_id, match_id, winner_team, loser_team, winner_user_id, loser_user_id, points_to_winner, points_to_loser, is_draw)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(uuidv4(), sessionId, match.id, winnerTeam, loserTeam, winnerId, loserId, pointsW, pointsL, isDraw ? 1 : 0);
+
+  return { ok: true, isDraw };
+}
+
+function extractOutcome(match) {
+  const source = match.suggestedResult || match.result || null;
+  if (!source) return null;
+  if (source.isDraw) return { winnerTeamId: null, isDraw: true };
+  if (source.winner) return { winnerTeamId: source.winner, isDraw: false };
+  return null;
+}
+
+function autoApplyFinishedMatches({ sessionId, effectiveSchedule, actorUserId }) {
+  let appliedCount = 0;
+
+  for (const match of effectiveSchedule) {
+    const outcome = extractOutcome(match);
+    if (!outcome) continue;
+
+    const result = applyMatchResultToSession({
+      sessionId,
+      match,
+      winnerTeamId: outcome.winnerTeamId,
+      isDraw: outcome.isDraw,
+      actorUserId,
+      strictChoice: false,
+    });
+
+    if (result.ok) appliedCount += 1;
+  }
+
+  return appliedCount;
+}
+
 // POST /api/game/session - create session
 router.post('/session', authMiddleware, (req, res) => {
   try {
@@ -209,6 +337,15 @@ router.post('/session', authMiddleware, (req, res) => {
       SELECT gs.* FROM game_sessions gs
       JOIN session_players sp ON gs.id = sp.session_id
       WHERE sp.user_id = ? AND gs.status != 'finished'
+      ORDER BY
+        CASE gs.status
+          WHEN 'active' THEN 0
+          WHEN 'auction' THEN 1
+          ELSE 2
+        END ASC,
+        (SELECT COUNT(*) FROM session_players sp2 WHERE sp2.session_id = gs.id) DESC,
+        gs.created_at DESC
+      LIMIT 1
     `).get(req.user.id);
 
     if (existingSession) {
@@ -266,7 +403,15 @@ router.get('/session', authMiddleware, (req, res) => {
       SELECT gs.* FROM game_sessions gs
       JOIN session_players sp ON gs.id = sp.session_id
       WHERE sp.user_id = ? AND gs.status != 'finished'
-      ORDER BY gs.created_at DESC LIMIT 1
+      ORDER BY
+        CASE gs.status
+          WHEN 'active' THEN 0
+          WHEN 'auction' THEN 1
+          ELSE 2
+        END ASC,
+        (SELECT COUNT(*) FROM session_players sp2 WHERE sp2.session_id = gs.id) DESC,
+        gs.created_at DESC
+      LIMIT 1
     `).get(req.user.id);
 
     if (!sessionRow) return res.json({ session: null });
@@ -286,7 +431,15 @@ router.post('/session/leave', authMiddleware, (req, res) => {
       SELECT gs.* FROM game_sessions gs
       JOIN session_players sp ON gs.id = sp.session_id
       WHERE sp.user_id = ? AND gs.status != 'finished'
-      ORDER BY gs.created_at DESC LIMIT 1
+      ORDER BY
+        CASE gs.status
+          WHEN 'active' THEN 0
+          WHEN 'auction' THEN 1
+          ELSE 2
+        END ASC,
+        (SELECT COUNT(*) FROM session_players sp2 WHERE sp2.session_id = gs.id) DESC,
+        gs.created_at DESC
+      LIMIT 1
     `).get(req.user.id);
 
     if (!sessionRow) return res.json({ left: false, session: null });
@@ -330,10 +483,10 @@ router.post('/home-team', authMiddleware, (req, res) => {
 
     let conflict = false;
     if (otherSelection && otherSelection.team_id === teamId) {
-      // Both want same team GåÆ bidding war, don't auto-assign
+      // Both want same team Gï¿½ï¿½ bidding war, don't auto-assign
       conflict = true;
     } else {
-      // No conflict GåÆ assign for free
+      // No conflict Gï¿½ï¿½ assign for free
       db.prepare('INSERT INTO team_ownerships (id, session_id, user_id, team_id, price_paid, is_home_team) VALUES (?, ?, ?, ?, 0, 1)').run(uuidv4(), sessionId, req.user.id, teamId);
     }
 
@@ -457,10 +610,20 @@ router.post('/finalize-auction', authMiddleware, (req, res) => {
 router.get('/matches/:sessionId', authMiddleware, async (req, res) => {
   try {
     const { sessionId } = req.params;
-    const state = getSessionState(sessionId, req.user.id);
+    let state = getSessionState(sessionId, req.user.id);
     if (!state) return res.status(404).json({ error: 'Session not found' });
 
     const effectiveSchedule = await getEffectiveSchedule();
+
+    const appliedCount = autoApplyFinishedMatches({
+      sessionId,
+      effectiveSchedule,
+      actorUserId: req.user.id,
+    });
+
+    if (appliedCount > 0) {
+      state = getSessionState(sessionId, req.user.id);
+    }
 
     const matchResultsDb = db.prepare('SELECT * FROM match_results WHERE session_id = ?').all(sessionId);
     const resultByMatchId = new Map(matchResultsDb.map(r => [r.match_id, r]));
@@ -554,86 +717,23 @@ router.post('/process-match', authMiddleware, async (req, res) => {
   try {
     const { sessionId, matchId, winnerTeamId, isDraw } = req.body;
 
-    const already = db.prepare('SELECT id FROM match_results WHERE session_id = ? AND match_id = ?').get(sessionId, matchId);
-    if (already) return res.status(400).json({ error: 'Match already processed' });
-
     const effectiveSchedule = await getEffectiveSchedule();
     const match = effectiveSchedule.find(m => m.id === matchId);
     if (!match) return res.status(404).json({ error: 'Match not found' });
 
-    const state = getSessionState(sessionId, req.user.id);
-    const allOwnedTeams = state.players.flatMap(p => p.teams.map(t => ({ teamId: t.teamId, userId: p.id })));
+    const result = applyMatchResultToSession({
+      sessionId,
+      match,
+      winnerTeamId,
+      isDraw: !!isDraw,
+      actorUserId: req.user.id,
+      strictChoice: true,
+    });
 
-    const t1Owner = allOwnedTeams.find(o => o.teamId === match.team1);
-    const t2Owner = allOwnedTeams.find(o => o.teamId === match.team2);
-
-    if (!t1Owner || !t2Owner) return res.status(400).json({ error: 'Both teams must be owned by players' });
-
-    const bothSameUser = t1Owner.userId === t2Owner.userId;
-    const matchChoice = bothSameUser
-      ? db.prepare('SELECT * FROM match_choices WHERE session_id = ? AND match_id = ?').get(sessionId, matchId)
-      : null;
-
-    if (bothSameUser && !matchChoice) {
-      return res.status(400).json({ error: 'Choose a team first' });
+    if (!result.ok) {
+      if (result.code === 'session-not-found') return res.status(404).json({ error: result.error });
+      return res.status(400).json({ error: result.error });
     }
-
-    let winnerId;
-    let loserId;
-    let winnerTeam;
-    let loserTeam;
-    let pointsW;
-    let pointsL;
-
-    if (bothSameUser) {
-      const chosenTeamId = matchChoice.chosen_team_id;
-      const chosenUserId = matchChoice.chosen_user_id;
-      const opponentUserId = matchChoice.opponent_user_id;
-      const loserTeamId = winnerTeamId === match.team1 ? match.team2 : match.team1;
-      const actualWinnerUserId = winnerTeamId === chosenTeamId ? chosenUserId : opponentUserId;
-      const actualLoserUserId = actualWinnerUserId === chosenUserId ? opponentUserId : chosenUserId;
-
-      winnerId = actualWinnerUserId;
-      loserId = actualLoserUserId;
-      winnerTeam = winnerTeamId;
-      loserTeam = loserTeamId;
-
-      if (isDraw) {
-        pointsW = 1;
-        pointsL = 1;
-        db.prepare('UPDATE users SET points = points + 1, draws = draws + 1, matches_played = matches_played + 1 WHERE id = ?').run(chosenUserId);
-        db.prepare('UPDATE users SET points = points + 1, draws = draws + 1, matches_played = matches_played + 1 WHERE id = ?').run(opponentUserId);
-      } else {
-        pointsW = 2;
-        pointsL = 0;
-        db.prepare('UPDATE users SET points = points + 2, wins = wins + 1, matches_played = matches_played + 1 WHERE id = ?').run(actualWinnerUserId);
-        db.prepare('UPDATE users SET losses = losses + 1, matches_played = matches_played + 1 WHERE id = ?').run(actualLoserUserId);
-      }
-    } else if (isDraw) {
-      pointsW = 1;
-      pointsL = 1;
-      winnerId = t1Owner.userId;
-      loserId = t2Owner.userId;
-      winnerTeam = match.team1;
-      loserTeam = match.team2;
-      db.prepare('UPDATE users SET points = points + 1, draws = draws + 1, matches_played = matches_played + 1 WHERE id = ?').run(t1Owner.userId);
-      db.prepare('UPDATE users SET points = points + 1, draws = draws + 1, matches_played = matches_played + 1 WHERE id = ?').run(t2Owner.userId);
-    } else {
-      const loserTeamId = winnerTeamId === match.team1 ? match.team2 : match.team1;
-      winnerId = allOwnedTeams.find(o => o.teamId === winnerTeamId)?.userId;
-      loserId = allOwnedTeams.find(o => o.teamId === loserTeamId)?.userId;
-      winnerTeam = winnerTeamId;
-      loserTeam = loserTeamId;
-      pointsW = 2;
-      pointsL = 0;
-      db.prepare('UPDATE users SET points = points + 2, wins = wins + 1, matches_played = matches_played + 1 WHERE id = ?').run(winnerId);
-      db.prepare('UPDATE users SET losses = losses + 1, matches_played = matches_played + 1 WHERE id = ?').run(loserId);
-    }
-
-    db.prepare(`
-      INSERT INTO match_results (id, session_id, match_id, winner_team, loser_team, winner_user_id, loser_user_id, points_to_winner, points_to_loser, is_draw)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(uuidv4(), sessionId, matchId, winnerTeam, loserTeam, winnerId, loserId, pointsW, pointsL, isDraw ? 1 : 0);
 
     const newState = getSessionState(sessionId, req.user.id);
     res.json({ session: newState, message: isDraw ? 'Draw! Both players get 1 point.' : 'Match processed! Winner gets 2 points.' });
@@ -657,6 +757,21 @@ router.get('/leaderboard', authMiddleware, (req, res) => {
 // GET /api/game/ipl-data
 router.get('/ipl-data', (req, res) => {
   res.json({ teams: IPL_TEAMS, matches: MATCH_SCHEDULE });
+});
+
+// GET /api/game/live-status
+router.get('/live-status', authMiddleware, async (req, res) => {
+  try {
+    await getEffectiveSchedule();
+    const diagnostics = getLiveDiagnostics();
+    res.json({
+      live: diagnostics,
+      nowTs: Date.now(),
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
 module.exports = router;

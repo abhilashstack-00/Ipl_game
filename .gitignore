@@ -17,6 +17,9 @@ frontend/.env.*
 # Database and runtime data
 backend/data/*.db
 backend/data/*.db-*
+backend/*.sqlite
+backend/data/*.sqlite
+backend/task_script.js
 
 # Logs
 npm-debug.log*

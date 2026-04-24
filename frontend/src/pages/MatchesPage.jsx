@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { useGame } from '../context/GameContext'
@@ -22,11 +22,42 @@ export default function MatchesPage() {
   const [simulResult, setSimulResult] = useState(null)
   const [processing, setProcessing] = useState('')
   const [filter, setFilter] = useState('all') // all | contest | mine
+  const autoApplyingRef = useRef(new Set())
 
   useEffect(() => {
     if (!session) { navigate('/lobby'); return }
     if (session?.session?.id) fetchMatches(session.session.id)
   }, [session])
+
+  useEffect(() => {
+    if (!session?.session?.id) return
+
+    const timerId = setInterval(() => {
+      fetchMatches(session.session.id)
+    }, 5000)
+
+    return () => clearInterval(timerId)
+  }, [session?.session?.id, fetchMatches])
+
+  useEffect(() => {
+    if (!session?.session?.id || !Array.isArray(matches) || processing) return
+
+    const nextAutoMatch = matches.find((match) => {
+      const hasSuggested = match?.suggestedResult?.winner || match?.suggestedResult?.isDraw
+      return match.isContest && !match.processed && hasSuggested && !autoApplyingRef.current.has(match.id)
+    })
+
+    if (!nextAutoMatch) return
+
+    autoApplyingRef.current.add(nextAutoMatch.id)
+    handleProcess(
+      nextAutoMatch,
+      nextAutoMatch.suggestedResult?.winner || null,
+      !!nextAutoMatch.suggestedResult?.isDraw,
+    ).finally(() => {
+      autoApplyingRef.current.delete(nextAutoMatch.id)
+    })
+  }, [session?.session?.id, matches, processing])
 
   if (!session) return null
 

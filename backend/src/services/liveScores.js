@@ -1,6 +1,7 @@
 const { MATCH_SCHEDULE } = require('../db/iplData');
 
-const CACHE_MS = 60 * 1000;
+const LIVE_CACHE_MS = Number(process.env.LIVE_CACHE_MS || 15000);
+const CACHE_MS = Number.isFinite(LIVE_CACHE_MS) && LIVE_CACHE_MS > 0 ? LIVE_CACHE_MS : 15000;
 
 const TEAM_ALIASES = {
   csk: ['csk', 'chennai super kings', 'chennai'],
@@ -25,6 +26,15 @@ const aliasToTeamId = Object.entries(TEAM_ALIASES).reduce((acc, [teamId, aliases
 let cache = {
   ts: 0,
   matches: [],
+};
+
+let diagnostics = {
+  provider: null,
+  enabled: false,
+  cacheMs: CACHE_MS,
+  lastFetchTs: 0,
+  lastSuccessTs: 0,
+  lastError: null,
 };
 
 function normalize(value) {
@@ -59,8 +69,14 @@ function sameFixture(a, b) {
 
 function parseWinner(match) {
   const winnerName = match.matchWinner || match.winnerTeam || '';
-  if (!winnerName) return null;
-  return resolveTeamId(winnerName);
+  if (winnerName) return resolveTeamId(winnerName);
+
+  const status = String(match.status || '');
+  const wonTokenIndex = status.toLowerCase().indexOf(' won ');
+  if (wonTokenIndex === -1) return null;
+
+  const winnerFromStatus = status.slice(0, wonTokenIndex).trim();
+  return resolveTeamId(winnerFromStatus);
 }
 
 async function fetchCricApiMatches() {
@@ -76,13 +92,25 @@ async function fetchCricApiMatches() {
   const payload = await response.json();
   const rows = Array.isArray(payload?.data) ? payload.data : [];
 
-  const seriesFilter = normalize(process.env.LIVE_SERIES_FILTER || 'ipl');
+  const rawSeriesFilter = (process.env.LIVE_SERIES_FILTER || 'ipl,indian premier league').trim();
+  const baseFilters = rawSeriesFilter
+    .split(',')
+    .map((value) => normalize(value))
+    .filter(Boolean);
+
+  const seriesFilters = Array.from(new Set(
+    baseFilters.flatMap((keyword) => {
+      if (keyword === 'ipl') return ['ipl', 'indian premier league'];
+      if (keyword === 'indian premier league') return ['indian premier league', 'ipl'];
+      return [keyword];
+    })
+  ));
 
   const liveMatches = rows
     .filter((m) => {
-      if (!seriesFilter) return true;
+      if (!seriesFilters.length) return true;
       const haystack = normalize(`${m.name || ''} ${m.series || ''}`);
-      return haystack.includes(seriesFilter);
+      return seriesFilters.some((keyword) => haystack.includes(keyword));
     })
     .map((m) => {
       const teamNames = Array.isArray(m.teamInfo)
@@ -118,19 +146,43 @@ async function fetchCricApiMatches() {
 
 async function getLiveMatches() {
   const provider = (process.env.LIVE_MATCH_PROVIDER || '').trim().toLowerCase();
+  diagnostics.provider = provider || null;
+  diagnostics.enabled = !!provider;
+
   if (!provider) return [];
 
   const now = Date.now();
   if (now - cache.ts < CACHE_MS) return cache.matches;
 
   try {
+    diagnostics.lastFetchTs = now;
     const matches = provider === 'cricapi' ? await fetchCricApiMatches() : [];
     cache = { ts: now, matches };
+    diagnostics.lastSuccessTs = now;
+    diagnostics.lastError = null;
     return matches;
   } catch (err) {
     console.error('[LiveScores] Failed to fetch live matches:', err.message);
+    diagnostics.lastError = err.message;
     return cache.matches;
   }
+}
+
+function getLiveDiagnostics() {
+  const now = Date.now();
+  return {
+    provider: diagnostics.provider,
+    enabled: diagnostics.enabled,
+    cacheMs: diagnostics.cacheMs,
+    cacheLastUpdatedTs: cache.ts,
+    cacheAgeMs: cache.ts ? Math.max(0, now - cache.ts) : null,
+    cachedMatchCount: Array.isArray(cache.matches) ? cache.matches.length : 0,
+    lastFetchTs: diagnostics.lastFetchTs || null,
+    lastSuccessTs: diagnostics.lastSuccessTs || null,
+    lastError: diagnostics.lastError,
+    hasCricApiKey: !!process.env.CRICAPI_KEY,
+    seriesFilter: process.env.LIVE_SERIES_FILTER || 'ipl',
+  };
 }
 
 async function getEffectiveSchedule() {
@@ -153,9 +205,10 @@ async function getEffectiveSchedule() {
 
     return {
       ...match,
-      // Keep static schedule as source of truth for fixtures, but expose live result suggestion.
-      suggestedResult: live.result || null,
-      liveStatus: live.liveStatus,
+      result: match.result || null,
+      // Keep static schedule as source of truth for fixtures, but expose only active live result suggestions.
+      suggestedResult: match.result ? null : (live.result || null),
+      liveStatus: match.result ? null : live.liveStatus,
       source: live.source,
     };
   });
@@ -180,4 +233,5 @@ async function getEffectiveSchedule() {
 
 module.exports = {
   getEffectiveSchedule,
+  getLiveDiagnostics,
 };
