@@ -64,7 +64,13 @@ function sameFixture(a, b) {
 
   if (!sameTeams) return false;
   if (!a.date || !b.date) return true;
-  return a.date === b.date;
+
+  const dateA = new Date(`${a.date}T00:00:00Z`);
+  const dateB = new Date(`${b.date}T00:00:00Z`);
+  if (Number.isNaN(dateA.getTime()) || Number.isNaN(dateB.getTime())) return a.date === b.date;
+
+  const diffDays = Math.abs(dateA.getTime() - dateB.getTime()) / (1000 * 60 * 60 * 24);
+  return diffDays <= 1;
 }
 
 function parseWinner(match) {
