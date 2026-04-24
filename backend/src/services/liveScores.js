@@ -79,69 +79,113 @@ function parseWinner(match) {
   return resolveTeamId(winnerFromStatus);
 }
 
-async function fetchCricApiMatches() {
-  const key = process.env.CRICAPI_KEY;
-  if (!key) return [];
-
-  const url = `https://api.cricapi.com/v1/currentMatches?apikey=${encodeURIComponent(key)}&offset=0`;
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`CricAPI request failed: ${response.status}`);
-  }
-
-  const payload = await response.json();
-  const rows = Array.isArray(payload?.data) ? payload.data : [];
-
+function getSeriesFilters() {
   const rawSeriesFilter = (process.env.LIVE_SERIES_FILTER || 'ipl,indian premier league').trim();
   const baseFilters = rawSeriesFilter
     .split(',')
     .map((value) => normalize(value))
     .filter(Boolean);
 
-  const seriesFilters = Array.from(new Set(
+  return Array.from(new Set(
     baseFilters.flatMap((keyword) => {
       if (keyword === 'ipl') return ['ipl', 'indian premier league'];
       if (keyword === 'indian premier league') return ['indian premier league', 'ipl'];
       return [keyword];
     })
   ));
+}
 
-  const liveMatches = rows
+function extractTeamNames(match) {
+  const byInfo = Array.isArray(match.teamInfo)
+    ? match.teamInfo.map((t) => t?.name).filter(Boolean)
+    : [];
+
+  if (byInfo.length >= 2) return byInfo;
+
+  if (Array.isArray(match.teams) && match.teams.length >= 2) {
+    return match.teams.filter(Boolean);
+  }
+
+  const name = String(match.name || '');
+  if (name.includes(' vs ')) {
+    const [left, rightRaw] = name.split(' vs ');
+    const right = String(rightRaw || '').split(',')[0].trim();
+    const l = String(left || '').trim();
+    if (l && right) return [l, right];
+  }
+
+  return [];
+}
+
+function parseCricApiMatch(match, sourceTag = 'cricapi') {
+  const teamNames = extractTeamNames(match);
+  if (teamNames.length < 2) return null;
+
+  const team1 = resolveTeamId(teamNames[0]);
+  const team2 = resolveTeamId(teamNames[1]);
+  if (!team1 || !team2 || team1 === team2) return null;
+
+  const winner = parseWinner(match);
+  const date = toIsoDate(match.dateTimeGMT || match.date || match.matchStarted);
+
+  return {
+    id: `${sourceTag}:${match.id || `${team1}-${team2}-${date || 'na'}`}`,
+    team1,
+    team2,
+    date,
+    venue: match.venue || 'TBD',
+    liveStatus: match.status || 'Live',
+    result: winner ? { winner, method: 'live-api' } : null,
+    source: 'cricapi',
+  };
+}
+
+async function fetchCricApiMatches() {
+  const key = process.env.CRICAPI_KEY;
+  if (!key) return [];
+
+  const seriesFilters = getSeriesFilters();
+
+  async function fetchJson(url) {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`CricAPI request failed: ${response.status}`);
+    return response.json();
+  }
+
+  const currentPayload = await fetchJson(`https://api.cricapi.com/v1/currentMatches?apikey=${encodeURIComponent(key)}&offset=0`);
+  const currentRows = Array.isArray(currentPayload?.data) ? currentPayload.data : [];
+
+  const seriesPayload = await fetchJson(`https://api.cricapi.com/v1/series?apikey=${encodeURIComponent(key)}&offset=0&search=${encodeURIComponent('Indian Premier League')}`);
+  const seriesRows = Array.isArray(seriesPayload?.data) ? seriesPayload.data : [];
+
+  const targetSeries = seriesRows.find((row) => {
+    const haystack = normalize(`${row?.name || ''} ${row?.series || ''}`);
+    return seriesFilters.some((keyword) => haystack.includes(keyword));
+  });
+
+  let seriesMatches = [];
+  if (targetSeries?.id) {
+    const infoPayload = await fetchJson(`https://api.cricapi.com/v1/series_info?apikey=${encodeURIComponent(key)}&id=${encodeURIComponent(targetSeries.id)}`);
+    const fromList = Array.isArray(infoPayload?.data?.matchList) ? infoPayload.data.matchList : [];
+    const fromMatches = Array.isArray(infoPayload?.data?.matches) ? infoPayload.data.matches : [];
+    seriesMatches = [...fromList, ...fromMatches];
+  }
+
+  const rows = [...currentRows, ...seriesMatches]
     .filter((m) => {
       if (!seriesFilters.length) return true;
       const haystack = normalize(`${m.name || ''} ${m.series || ''}`);
       return seriesFilters.some((keyword) => haystack.includes(keyword));
-    })
-    .map((m) => {
-      const teamNames = Array.isArray(m.teamInfo)
-        ? m.teamInfo.map((t) => t?.name).filter(Boolean)
-        : Array.isArray(m.teams)
-        ? m.teams
-        : [];
+    });
 
-      if (teamNames.length < 2) return null;
+  const deduped = new Map();
+  for (const row of rows) {
+    const parsed = parseCricApiMatch(row, 'cricapi');
+    if (!parsed) continue;
+    deduped.set(parsed.id, parsed);
+  }
 
-      const team1 = resolveTeamId(teamNames[0]);
-      const team2 = resolveTeamId(teamNames[1]);
-      if (!team1 || !team2 || team1 === team2) return null;
-
-      const winner = parseWinner(m);
-      const date = toIsoDate(m.dateTimeGMT || m.date || m.matchStarted);
-
-      return {
-        id: `cricapi:${m.id || `${team1}-${team2}-${date || 'na'}`}`,
-        team1,
-        team2,
-        date,
-        venue: m.venue || 'TBD',
-        liveStatus: m.status || 'Live',
-        result: winner ? { winner, method: 'live-api' } : null,
-        source: 'cricapi',
-      };
-    })
-    .filter(Boolean);
-
-  return liveMatches;
+  return Array.from(deduped.values());
 }
 
 async function getLiveMatches() {
