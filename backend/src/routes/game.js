@@ -9,6 +9,7 @@ const router = express.Router();
 const MAX_TEAMS = 5;
 const STARTING_CREDITS = 100;
 const AUCTION_ROUND_SECONDS = 20;
+const ALLOW_TEST_HELPER = (process.env.ALLOW_TEST_HELPER || '').trim().toLowerCase() === 'true';
 
 function getPendingBidTeam(sessionId) {
   const selections = db.prepare('SELECT * FROM home_team_selections WHERE session_id = ?').all(sessionId);
@@ -330,6 +331,33 @@ function autoApplyFinishedMatches({ sessionId, effectiveSchedule, actorUserId })
   return appliedCount;
 }
 
+function seedTeamsForTesting(sessionId) {
+  const state = getSessionState(sessionId, null);
+  if (!state) return { ok: false, error: 'Session not found' };
+
+  const players = db.prepare('SELECT user_id FROM session_players WHERE session_id = ? ORDER BY joined_at ASC').all(sessionId).map((row) => row.user_id);
+  if (players.length < 2) return { ok: false, error: 'Need two players in the session' };
+
+  const [playerA, playerB] = players;
+
+  db.prepare('DELETE FROM bids WHERE session_id = ?').run(sessionId);
+  db.prepare('DELETE FROM home_team_selections WHERE session_id = ?').run(sessionId);
+  db.prepare('DELETE FROM team_ownerships WHERE session_id = ?').run(sessionId);
+  db.prepare('DELETE FROM auction_state WHERE session_id = ?').run(sessionId);
+
+  IPL_TEAMS.forEach((team, index) => {
+    const ownerId = index % 2 === 0 ? playerA : playerB;
+    const isHomeTeam = index === 0 || index === 1;
+    db.prepare('INSERT INTO team_ownerships (id, session_id, user_id, team_id, price_paid, is_home_team) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(uuidv4(), sessionId, ownerId, team.id, team.basePrice || 0, isHomeTeam ? 1 : 0);
+  });
+
+  db.prepare("UPDATE game_sessions SET status = 'active' WHERE id = ?").run(sessionId);
+  db.prepare('UPDATE session_players SET credits = ? WHERE session_id = ?').run(STARTING_CREDITS, sessionId);
+
+  return { ok: true };
+}
+
 // POST /api/game/session - create session
 router.post('/session', authMiddleware, (req, res) => {
   try {
@@ -600,6 +628,27 @@ router.post('/finalize-auction', authMiddleware, (req, res) => {
     db.prepare("UPDATE game_sessions SET status = 'active', started_at = strftime('%s','now') WHERE id = ?").run(sessionId);
     const state = getSessionState(sessionId, req.user.id);
     res.json({ session: state });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// POST /api/game/debug/seed-session - test-only helper to skip bidding and jump to active play
+router.post('/debug/seed-session', authMiddleware, (req, res) => {
+  try {
+    if (!ALLOW_TEST_HELPER) {
+      return res.status(403).json({ error: 'Test helper disabled' });
+    }
+
+    const { sessionId } = req.body;
+    if (!sessionId) return res.status(400).json({ error: 'sessionId is required' });
+
+    const result = seedTeamsForTesting(sessionId);
+    if (!result.ok) return res.status(400).json({ error: result.error });
+
+    const state = getSessionState(sessionId, req.user.id);
+    return res.json({ session: state, seeded: true });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });
