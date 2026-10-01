@@ -16,10 +16,9 @@ function MatchStatusBadge({ match }) {
 
 export default function MatchesPage() {
   const { user } = useAuth()
-  const { session, matches, fetchMatches, processMatch, addNotification } = useGame()
+  const { session, matches, fetchMatches, processMatch, adminSetMatchResult, addNotification } = useGame()
   const navigate = useNavigate()
   const [selectedMatch, setSelectedMatch] = useState(null)
-  const [simulResult, setSimulResult] = useState(null)
   const [processing, setProcessing] = useState('')
   const [filter, setFilter] = useState('all') // all | contest | mine
   const autoApplyingRef = useRef(new Set())
@@ -50,17 +49,14 @@ export default function MatchesPage() {
     if (!nextAutoMatch) return
 
     autoApplyingRef.current.add(nextAutoMatch.id)
-    handleProcess(
-      nextAutoMatch,
-      nextAutoMatch.suggestedResult?.winner || null,
-      !!nextAutoMatch.suggestedResult?.isDraw,
-    ).finally(() => {
+    handleProcess(nextAutoMatch).finally(() => {
       autoApplyingRef.current.delete(nextAutoMatch.id)
     })
   }, [session?.session?.id, matches, processing])
 
   if (!session) return null
 
+  const isAdmin = user?.role === 'admin' // display only; the server enforces the role
   const myPlayer = session.players?.find(p => p.id === user?.id)
   const myTeams = myPlayer?.teams?.map(t => t.teamId) || []
 
@@ -70,21 +66,25 @@ export default function MatchesPage() {
     return true
   })
 
-  const simulate = (match) => {
-    const winner = Math.random() > 0.5 ? match.team1 : match.team2
-    setSimulResult({ matchId: match.id, winner })
-    setSelectedMatch(match)
-  }
-
-  const handleProcess = async (match, winnerTeamId, isDraw = false) => {
+  // Applies the official result. The server decides the winner; the client never sends one.
+  const handleProcess = async (match) => {
     setProcessing(match.id)
     try {
-      const result = await processMatch(session.session.id, match.id, winnerTeamId, isDraw)
+      const result = await processMatch(session.session.id, match.id)
       addNotification(result.message, 'success')
-      setSelectedMatch(null)
-      setSimulResult(null)
     } catch (err) {
       addNotification(err.response?.data?.error || 'Failed to process match', 'danger')
+    } finally { setProcessing('') }
+  }
+
+  const handleAdminResult = async (match, winnerTeamId, isDraw = false) => {
+    setProcessing(match.id)
+    try {
+      await adminSetMatchResult(match.id, winnerTeamId, isDraw)
+      addNotification('Official result recorded', 'success')
+      setSelectedMatch(null)
+    } catch (err) {
+      addNotification(err.response?.data?.error || 'Failed to record result', 'danger')
     } finally { setProcessing('') }
   }
 
@@ -129,7 +129,6 @@ export default function MatchesPage() {
           const bothSame = match.bothSameUser
           const myTeamInMatch = myTeams.includes(match.team1) || myTeams.includes(match.team2)
           const done = match.processed || !!match.result
-          const isSimulated = simulResult?.matchId === match.id
           const today = new Date().toISOString().split('T')[0]
           const isLive = match.date <= today && !done
 
@@ -168,13 +167,8 @@ export default function MatchesPage() {
                       <span className="mx-2 text-white text-sm">
                         {match.result.winner === match.team1 ? '🏆' : ''}
                       </span>
-                    ) : isSimulated ? (
-                      <span className="mx-2 text-orange-400 text-sm font-bold">
-                        {simulResult.winner === match.team1 ? '★' : ''}
-                      </span>
                     ) : null}
                     {' '}vs{' '}
-                    {isSimulated && simulResult.winner === match.team2 ? <span className="text-orange-400">★</span> : null}
                     {done && match.result?.winner === match.team2 ? '🏆' : ''}
                     {getTeam(match.team2).short}
                   </div>
@@ -185,7 +179,6 @@ export default function MatchesPage() {
                     <MatchStatusBadge match={match} />
                     {isContestMatch && !done && <span className="badge badge-orange">⚔️ Contest</span>}
                     {bothSame && <span className="badge badge-blue">Both Yours</span>}
-                    {isSimulated && <span className="badge badge-gold">Simulated</span>}
                     {match.liveStatus && <span className="badge badge-blue">{match.liveStatus}</span>}
                   </div>
                 </div>
@@ -211,43 +204,22 @@ export default function MatchesPage() {
                   ) : isContestMatch && (match.suggestedResult?.winner || match.suggestedResult?.isDraw) ? (
                     <button
                       className="btn-gold py-1.5 px-3 text-xs"
-                      onClick={() => handleProcess(match, match.suggestedResult?.winner || null, !!match.suggestedResult?.isDraw)}
+                      onClick={() => handleProcess(match)}
                       disabled={processing === match.id}
                     >
                       {processing === match.id ? <Spinner size="sm" /> : 'Apply Live Result'}
                     </button>
                   ) : isContestMatch && isLive ? (
                     <>
-                      {!isSimulated ? (
+                      <span className="text-xs text-gray-400 text-center">Awaiting official result</span>
+                      {isAdmin && (
                         <button
-                          className="btn-success py-1.5 px-3 text-xs"
-                          onClick={() => simulate(match)}
+                          className="btn-outline py-1 px-2 text-xs"
+                          onClick={() => setSelectedMatch(match)}
                         >
-                          🎲 Simulate
+                          Admin: enter result
                         </button>
-                      ) : (
-                        <>
-                          <button
-                            className="btn-gold py-1.5 px-3 text-xs"
-                            onClick={() => handleProcess(match, simulResult.winner)}
-                            disabled={processing === match.id}
-                          >
-                            {processing === match.id ? <Spinner size="sm" /> : '✓ Apply Result'}
-                          </button>
-                          <button
-                            className="btn-outline py-1.5 px-3 text-xs"
-                            onClick={() => setSimulResult(null)}
-                          >
-                            Re-simulate
-                          </button>
-                        </>
                       )}
-                      <button
-                        className="btn-outline py-1 px-2 text-xs"
-                        onClick={() => setSelectedMatch(match)}
-                      >
-                        Manual
-                      </button>
                     </>
                   ) : isContestMatch && !isLive ? (
                     <span className="text-xs text-gray-500 text-center">Match not started</span>
@@ -272,11 +244,11 @@ export default function MatchesPage() {
 
       {/* Manual result modal */}
       <Modal
-        open={!!selectedMatch && !simulResult}
+        open={isAdmin && !!selectedMatch}
         onClose={() => setSelectedMatch(null)}
-        title="Enter Match Result"
+        title="Enter Official Result (Admin)"
       >
-        {selectedMatch && (
+        {isAdmin && selectedMatch && (
           <div>
             <div className="flex items-center justify-around mb-6">
               <div className="text-center">
@@ -284,7 +256,7 @@ export default function MatchesPage() {
                 <div className="mt-2 font-bold">{getTeam(selectedMatch.team1).name}</div>
                 <button
                   className="btn-gold py-2 px-5 text-sm mt-3"
-                  onClick={() => handleProcess(selectedMatch, selectedMatch.team1)}
+                  onClick={() => handleAdminResult(selectedMatch, selectedMatch.team1)}
                   disabled={!!processing}
                 >
                   {processing ? <Spinner size="sm" /> : 'Won'}
@@ -294,7 +266,7 @@ export default function MatchesPage() {
                 <div className="font-teko text-3xl text-gray-500">VS</div>
                 <button
                   className="btn-outline py-2 px-4 text-sm mt-3 block"
-                  onClick={() => handleProcess(selectedMatch, null, true)}
+                  onClick={() => handleAdminResult(selectedMatch, null, true)}
                   disabled={!!processing}
                 >
                   Draw
@@ -305,7 +277,7 @@ export default function MatchesPage() {
                 <div className="mt-2 font-bold">{getTeam(selectedMatch.team2).name}</div>
                 <button
                   className="btn-gold py-2 px-5 text-sm mt-3"
-                  onClick={() => handleProcess(selectedMatch, selectedMatch.team2)}
+                  onClick={() => handleAdminResult(selectedMatch, selectedMatch.team2)}
                   disabled={!!processing}
                 >
                   {processing ? <Spinner size="sm" /> : 'Won'}
@@ -313,7 +285,7 @@ export default function MatchesPage() {
               </div>
             </div>
             <Alert type="info">
-              Winner gets +2 pts · Draw gives +1 pt each · Loser gets 0
+              Records the real-world result for every session. It cannot be changed afterwards.
             </Alert>
           </div>
         )}

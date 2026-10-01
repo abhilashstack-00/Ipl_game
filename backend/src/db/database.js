@@ -10,6 +10,8 @@ const db = new Database(DB_PATH);
 // Enable WAL for better concurrency
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
+// Wait for locks instead of failing immediately if another connection (e.g. setup.js) writes.
+db.pragma('busy_timeout = 5000');
 
 function init() {
   db.exec(`
@@ -137,6 +139,37 @@ function init() {
   `);
 
   db.prepare('UPDATE session_players SET credits = 100 WHERE credits IS NULL').run();
+
+  // Server-side roles. Never set from client input; promote with `node setup.js --admin <username>`.
+  const userCols = db.prepare('PRAGMA table_info(users)').all();
+  if (!userCols.some(c => c.name === 'role')) {
+    db.exec("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'player'");
+  }
+
+  // Official results entered by an admin when the live provider has none. Global, not per session.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS official_results (
+      match_id TEXT PRIMARY KEY,
+      winner_team TEXT,
+      is_draw INTEGER NOT NULL DEFAULT 0,
+      set_by TEXT NOT NULL,
+      set_at INTEGER DEFAULT (strftime('%s','now')),
+      FOREIGN KEY(set_by) REFERENCES users(id)
+    )
+  `);
+
+  // Database-level guarantees so a duplicate write fails even if an application check is missed.
+  const uniqueIndexes = [
+    ['ux_match_results_session_match', 'match_results(session_id, match_id)'],
+    ['ux_team_ownerships_session_team', 'team_ownerships(session_id, team_id)'],
+  ];
+  for (const [name, target] of uniqueIndexes) {
+    try {
+      db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS ${name} ON ${target}`);
+    } catch (err) {
+      console.error(`[db] Could not create unique index ${name}; existing rows contain duplicates. Clean them up and restart.`, err.message);
+    }
+  }
 }
 
 init();

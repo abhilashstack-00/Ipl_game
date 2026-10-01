@@ -35,6 +35,29 @@ db.exec(`
   );
 `)
 
+// Roles live only in the database and are never accepted from the client.
+const userCols = db.prepare('PRAGMA table_info(users)').all()
+if (!userCols.some(c => c.name === 'role')) {
+  db.exec("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'player'")
+}
+
+// Usage: node setup.js --admin <username>     (promote)
+//        node setup.js --revoke-admin <username>
+const adminFlag = process.argv.indexOf('--admin')
+const revokeFlag = process.argv.indexOf('--revoke-admin')
+if (adminFlag !== -1 || revokeFlag !== -1) {
+  const promote = adminFlag !== -1
+  const target = process.argv[(promote ? adminFlag : revokeFlag) + 1]
+  if (!target) {
+    console.error('Usage: node setup.js --admin <username>')
+    process.exit(1)
+  }
+  const changed = db.prepare('UPDATE users SET role = ? WHERE username = ?').run(promote ? 'admin' : 'player', target).changes
+  console.log(changed ? `  ✓ ${target} is now ${promote ? 'an admin' : 'a player'}` : `  ✗ No user named "${target}"`)
+  db.close()
+  process.exit(changed ? 0 : 1)
+}
+
 const seedUsers = [
   { username: 'Player1', password: 'ipl2025' },
   { username: 'Player2', password: 'ipl2025' },

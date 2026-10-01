@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react'
-import { api, getSocket } from '../utils/api'
+import { api, getSocket, disconnectSocket } from '../utils/api'
 import { useAuth } from './AuthContext'
 
 const GameContext = createContext(null)
@@ -46,6 +46,12 @@ export function GameProvider({ children }) {
     if (user) fetchSession()
   }, [user, fetchSession])
 
+  // Drop the socket when the logged-in user changes so it never carries a stale identity.
+  useEffect(() => {
+    if (!user) { setSession(null); setMatches([]) }
+    return () => disconnectSocket()
+  }, [user?.id])
+
   useEffect(() => {
     if (session?.session?.id) {
       fetchMatches(session.session.id)
@@ -54,10 +60,13 @@ export function GameProvider({ children }) {
       const socket = getSocket()
       if (!socket.connected) socket.connect()
 
-      socket.emit('join-session', {
-        sessionId: session.session.id,
-        userId: user?.id,
-        username: user?.username,
+      // Identity comes from the JWT in the socket handshake; the server checks membership.
+      const join = () => socket.emit('join-session', { sessionId: session.session.id })
+      join()
+      socket.on('connect', join) // re-join after reconnects
+
+      socket.on('join-error', (data) => {
+        console.warn('Realtime join rejected:', data?.error)
       })
 
       socket.on('auction-update', (data) => {
@@ -83,6 +92,8 @@ export function GameProvider({ children }) {
       })
 
       return () => {
+        socket.off('connect', join)
+        socket.off('join-error')
         socket.off('auction-update')
         socket.off('match-result')
         socket.off('player-joined')
@@ -123,24 +134,18 @@ export function GameProvider({ children }) {
   const selectHomeTeam = async (sessionId, teamId) => {
     const r = await api.post('/game/home-team', { sessionId, teamId })
     setSession(r.data.session)
-    const socket = getSocket()
-    socket.emit('home-team-selected', { sessionId, teamId, userId: user.id, username: user.username, conflict: r.data.conflict })
     return r.data
   }
 
   const placeBid = async (sessionId, teamId, amount) => {
-    const r = await api.post('/game/bid', { sessionId, teamId, amount })
+    const r = await api.post('/game/bid', { sessionId, teamId, amount: Number(amount) })
     setSession(r.data.session)
-    const socket = getSocket()
-    socket.emit('bid-placed', { sessionId, teamId, userId: user.id, username: user.username })
     return r.data
   }
 
   const buyTeam = async (sessionId, teamId) => {
     const r = await api.post('/game/buy-team', { sessionId, teamId })
     setSession(r.data.session)
-    const socket = getSocket()
-    socket.emit('team-bought', { sessionId, teamId, userId: user.id, username: user.username, price: r.data.price })
     return r.data
   }
 
@@ -150,12 +155,19 @@ export function GameProvider({ children }) {
     return r.data
   }
 
-  const processMatch = async (sessionId, matchId, winnerTeamId, isDraw = false) => {
-    const r = await api.post('/game/process-match', { sessionId, matchId, winnerTeamId, isDraw })
+  // Applies the OFFICIAL result; the server decides the winner. Realtime events come from the server.
+  const processMatch = async (sessionId, matchId) => {
+    const r = await api.post('/game/process-match', { sessionId, matchId })
     setSession(r.data.session)
     await fetchMatches(sessionId)
-    const socket = getSocket()
-    socket.emit('match-processed', { sessionId, matchId, winnerName: '?', points: isDraw ? 1 : 2 })
+    return r.data
+  }
+
+  // Admin only (enforced server-side): record an official result when the live feed has none.
+  const adminSetMatchResult = async (matchId, winnerTeamId, isDraw = false) => {
+    const body = isDraw ? { matchId, isDraw: true } : { matchId, winnerTeamId }
+    const r = await api.post('/game/admin/match-result', body)
+    if (session?.session?.id) await fetchMatches(session.session.id)
     return r.data
   }
 
@@ -165,7 +177,7 @@ export function GameProvider({ children }) {
       fetchSession, fetchMatches, createSession, joinSession,
       leaveSession,
       selectHomeTeam, placeBid, buyTeam, finalizeAuction, processMatch,
-      addNotification,
+      adminSetMatchResult, addNotification,
     }}>
       {children}
     </GameContext.Provider>

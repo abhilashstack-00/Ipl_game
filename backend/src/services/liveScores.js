@@ -74,10 +74,15 @@ function sameFixture(a, b) {
 }
 
 function parseWinner(match) {
+  // This feed is the authoritative result source, so only finished matches count.
+  if (match.matchEnded === false) return null;
+
   const winnerName = match.matchWinner || match.winnerTeam || '';
   if (winnerName) return resolveTeamId(winnerName);
 
   const status = String(match.status || '');
+  // In-play statuses look like "X won the toss and elected to bat"; that is not a match result.
+  if (/\btoss\b/i.test(status)) return null;
   const wonTokenIndex = status.toLowerCase().indexOf(' won ');
   if (wonTokenIndex === -1) return null;
 

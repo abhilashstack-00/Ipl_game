@@ -13,7 +13,8 @@ export default function RegisterPage() {
     e.preventDefault()
     setError('')
     if (form.password !== form.confirm) { setError('Passwords do not match'); return }
-    if (form.password.length < 4) { setError('Password must be at least 4 characters'); return }
+    if (!/^[A-Za-z0-9_]{3,24}$/.test(form.username)) { setError('Username must be 3-24 letters, numbers or underscores'); return }
+    if (form.password.length < 8) { setError('Password must be at least 8 characters'); return }
     setLoading(true)
     try {
       await register(form.username, form.password)

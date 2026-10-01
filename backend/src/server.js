@@ -11,34 +11,29 @@ const gameRoutes = require('./routes/game');
 const app = express();
 const server = http.createServer(app);
 
+const db = require('./db/database');
+const { verifyTokenAndLoadUser } = require('./middleware/auth');
+
+const DEFAULT_ORIGINS = [
+  'https://abhilashstack-00.github.io',
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+];
+const allowedOrigins = new Set([
+  ...DEFAULT_ORIGINS,
+  ...(process.env.FRONTEND_URLS || '').split(',').map(u => u.trim()).filter(Boolean),
+]);
+
 const corsOptions = {
   origin: function(origin, callback) {
-    // List of allowed origins
-    const allowedOrigins = [
-      'https://abhilashstack-00.github.io',
-      'http://localhost:5173',
-      'http://127.0.0.1:5173',
-    ];
-    
-    // Allow requests with no origin (e.g., mobile apps, curl requests)
-    if (!origin) return callback(null, true);
-    
-    // Check if origin is in the allowlist
-    if (allowedOrigins.includes(origin)) {
-      return callback(null, true);
-    }
-    
-    // Also allow if FRONTEND_URLS env var contains this origin
-    const envUrls = process.env.FRONTEND_URLS || '';
-    const envOrigins = envUrls.split(',').map(url => url.trim());
-    if (envOrigins.includes(origin)) {
-      return callback(null, true);
-    }
-    
-    callback(null, true); // Allow all for now to debug
+    // Requests without an Origin header (curl, server-to-server) carry no browser credentials;
+    // every API route still requires a valid JWT.
+    if (!origin || allowedOrigins.has(origin)) return callback(null, true);
+    return callback(null, false);
   },
   methods: ['GET', 'POST'],
-  credentials: true,
+  // Auth uses a Bearer header, not cookies, so credentialed CORS is unnecessary.
+  credentials: false,
 };
 
 const io = new Server(server, {
@@ -57,66 +52,59 @@ app.use('/api/game', gameRoutes);
 app.get('/api/health', (req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
 
 // Socket.io - Real-time game updates
-const sessionRooms = new Map(); // sessionId → Set of socket ids
+// Clients may only (1) authenticate and (2) ask to subscribe to their own session's room.
+// All game events are emitted by the server from route handlers after the DB write commits.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+io.use((socket, next) => {
+  const user = verifyTokenAndLoadUser(socket.handshake.auth?.token);
+  if (!user) return next(new Error('unauthorized'));
+  socket.data.user = { id: user.id, username: user.username };
+  next();
+});
 
 io.on('connection', (socket) => {
-  console.log(`[Socket] Connected: ${socket.id}`);
+  const { id: userId, username } = socket.data.user;
+  console.log(`[Socket] Connected: ${socket.id} (${username})`);
 
-  socket.on('join-session', ({ sessionId, userId, username }) => {
+  socket.on('join-session', (payload, ack) => {
+    const reply = typeof ack === 'function' ? ack : () => {};
+    const sessionId = payload?.sessionId;
+    // Any userId/username in the payload is ignored; identity comes from the verified JWT.
+    if (typeof sessionId !== 'string' || !UUID_RE.test(sessionId)) {
+      socket.emit('join-error', { error: 'Invalid session' });
+      return reply({ ok: false, error: 'Invalid session' });
+    }
+    const member = db.prepare(`
+      SELECT 1 FROM session_players sp JOIN game_sessions gs ON gs.id = sp.session_id
+      WHERE sp.session_id = ? AND sp.user_id = ? AND gs.status != 'finished'
+    `).get(sessionId, userId);
+    if (!member) {
+      socket.emit('join-error', { error: 'Not a member of this session' });
+      return reply({ ok: false, error: 'Not a member of this session' });
+    }
+
+    // One session room per socket.
+    if (socket.data.sessionId && socket.data.sessionId !== sessionId) {
+      socket.leave(`session:${socket.data.sessionId}`);
+    }
     socket.join(`session:${sessionId}`);
-    socket.data = { sessionId, userId, username };
+    socket.data.sessionId = sessionId;
     console.log(`[Socket] ${username} joined session ${sessionId}`);
     socket.to(`session:${sessionId}`).emit('player-joined', { userId, username });
+    reply({ ok: true });
   });
 
-  socket.on('leave-session', ({ sessionId }) => {
-    socket.leave(`session:${sessionId}`);
-  });
-
-  // Broadcast game state update to all in session
-  socket.on('state-update', ({ sessionId, event, data }) => {
-    socket.to(`session:${sessionId}`).emit('state-update', { event, data });
-  });
-
-  // Auction events
-  socket.on('team-bought', ({ sessionId, teamId, userId, username, price }) => {
-    io.to(`session:${sessionId}`).emit('auction-update', {
-      type: 'team-bought',
-      teamId, userId, username, price,
-      message: `${username} bought ${teamId.toUpperCase()} for ${price} cr!`,
-    });
-  });
-
-  socket.on('home-team-selected', ({ sessionId, teamId, userId, username, conflict }) => {
-    io.to(`session:${sessionId}`).emit('auction-update', {
-      type: conflict ? 'bid-war-started' : 'home-team-selected',
-      teamId, userId, username,
-      message: conflict
-        ? `⚔️ Both players want ${teamId.toUpperCase()}! Bidding war begins!`
-        : `${username} selected ${teamId.toUpperCase()} as home team (FREE)`,
-    });
-  });
-
-  socket.on('bid-placed', ({ sessionId, teamId, userId, username }) => {
-    io.to(`session:${sessionId}`).emit('auction-update', {
-      type: 'bid-placed',
-      teamId, userId, username,
-      message: `${username} placed a bid on ${teamId.toUpperCase()}`,
-    });
-  });
-
-  socket.on('match-processed', ({ sessionId, matchId, winnerName, points }) => {
-    io.to(`session:${sessionId}`).emit('match-result', {
-      matchId, winnerName, points,
-      message: `🏆 ${winnerName} earns ${points} points!`,
-    });
+  socket.on('leave-session', () => {
+    if (socket.data.sessionId) {
+      socket.leave(`session:${socket.data.sessionId}`);
+      socket.data.sessionId = null;
+    }
   });
 
   socket.on('disconnect', () => {
-    if (socket.data?.sessionId && socket.data?.username) {
-      socket.to(`session:${socket.data.sessionId}`).emit('player-disconnected', {
-        username: socket.data.username,
-      });
+    if (socket.data.sessionId) {
+      socket.to(`session:${socket.data.sessionId}`).emit('player-disconnected', { username });
     }
     console.log(`[Socket] Disconnected: ${socket.id}`);
   });

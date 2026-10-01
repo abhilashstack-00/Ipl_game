@@ -32,6 +32,8 @@ export function getSocket() {
     socket = io(import.meta.env.VITE_SOCKET_URL || window.location.origin, {
       autoConnect: false,
       transports: ['websocket', 'polling'],
+      // Read the token on every (re)connect so a re-login uses the fresh JWT.
+      auth: (cb) => cb({ token: localStorage.getItem('ipl_token') }),
     })
   }
   return socket

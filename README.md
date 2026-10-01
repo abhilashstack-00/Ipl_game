@@ -84,8 +84,12 @@ Once both players have built their squads, click **Finalize & Start Season**.
 ### Step 5 — Process Matches
 Go to **Matches** tab and:
 - See which matches are **contests** (each team owned by a different player)
-- Simulate a result with 🎲 or enter manually
-- Apply the result to award points
+- Official results are applied automatically from the live feed (or the seeded schedule)
+- If the live feed has no result, an **admin** enters the official result once; it then applies to every session
+
+Players can never choose a match winner. See `SECURITY_AUDIT.md`.
+
+To make someone an admin: `node setup.js --admin <username>`
 
 ### Points System
 | Outcome | Points |
@@ -194,14 +198,18 @@ ipl-game/
 
 | Event | Direction | Payload |
 |-------|-----------|---------|
-| `join-session` | Client → Server | `{ sessionId, userId, username }` |
-| `team-bought` | Client → Server | `{ sessionId, teamId, price }` |
-| `home-team-selected` | Client → Server | `{ sessionId, teamId, conflict }` |
-| `bid-placed` | Client → Server | `{ sessionId, teamId }` |
-| `match-processed` | Client → Server | `{ sessionId, matchId }` |
-| `auction-update` | Server → Client | `{ type, message, ... }` |
-| `match-result` | Server → Client | `{ matchId, winnerName, points }` |
-| `player-joined` | Server → Client | `{ username }` |
+Sockets authenticate with the JWT (`io(url, { auth: { token } })`). Clients can only subscribe;
+every game event is emitted by the server after the database write succeeds.
+
+| Event | Direction | Payload |
+|-------|-----------|---------|
+| `join-session` | Client → Server | `{ sessionId }` (membership verified server-side) |
+| `leave-session` | Client → Server | none |
+| `join-error` | Server → Client | `{ error }` |
+| `auction-update` | Server → Client | `{ type, teamId, username, message }` |
+| `match-result` | Server → Client | `{ matchId, winnerName, points, message }` |
+| `state-update` | Server → Client | `{ event }` (refetch session/matches) |
+| `player-joined` | Server → Client | `{ userId, username }` |
 
 ---
 
@@ -217,7 +225,7 @@ node setup.js
 Edit `backend/src/db/iplData.js` and add entries to `MATCH_SCHEDULE`. IDs must be unique strings.
 
 ### Change JWT secret
-Edit `backend/.env` → `JWT_SECRET=your-secret-here`
+Edit `backend/.env` → `JWT_SECRET=<long random value>` (required; there is no default)
 
 ### Build for production
 ```bash
@@ -266,9 +274,12 @@ This project is full-stack, so deploy backend first, then frontend.
 6. Add environment variables:
 
 ```env
-JWT_SECRET=your-strong-secret
-FRONTEND_URLS=https://YOUR_GITHUB_USERNAME.github.io/ipl-game,http://localhost:5173
+JWT_SECRET=<64 random hex chars: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))">
+FRONTEND_URLS=https://YOUR_GITHUB_USERNAME.github.io,http://localhost:5173
 ```
+
+The server will not start without `JWT_SECRET`. `FRONTEND_URLS` entries are browser origins
+(scheme + host, no path).
 
 After deploy, note backend URL like:
 `https://ipl-game-backend.onrender.com`

@@ -1,7 +1,8 @@
 const express = require('express');
+const crypto = require('crypto');
 const { v4: uuidv4 } = require('uuid');
 const db = require('../db/database');
-const { authMiddleware } = require('../middleware/auth');
+const { authMiddleware, requireAdmin } = require('../middleware/auth');
 const { IPL_TEAMS, MATCH_SCHEDULE } = require('../db/iplData');
 const { getEffectiveSchedule, getLiveDiagnostics } = require('../services/liveScores');
 
@@ -10,6 +11,85 @@ const MAX_TEAMS = 5;
 const STARTING_CREDITS = 100;
 const AUCTION_ROUND_SECONDS = 20;
 const ALLOW_TEST_HELPER = (process.env.ALLOW_TEST_HELPER || '').trim().toLowerCase() === 'true';
+
+// ---------------------------------------------------------------------------
+// Input validation helpers. Every client value is untrusted.
+// ---------------------------------------------------------------------------
+const VALID_TEAM_IDS = new Set(IPL_TEAMS.map(t => t.id));
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const MATCH_ID_RE = /^[A-Za-z0-9:_-]{1,128}$/;
+const INVITE_CODE_RE = /^[A-Z0-9]{1,12}$/;
+const INVITE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+
+const isUuid = (v) => typeof v === 'string' && UUID_RE.test(v);
+const isMatchId = (v) => typeof v === 'string' && MATCH_ID_RE.test(v);
+const isTeamId = (v) => typeof v === 'string' && VALID_TEAM_IDS.has(v);
+const todayUtc = () => new Date().toISOString().slice(0, 10);
+
+// Reject any body field the route does not expect (e.g. userId, winnerTeamId, role, credits).
+function allowFields(allowed) {
+  return (req, res, next) => {
+    const body = req.body ?? {};
+    if (typeof body !== 'object' || Array.isArray(body)) {
+      return res.status(400).json({ error: 'Request body must be a JSON object' });
+    }
+    const unexpected = Object.keys(body).filter(k => !allowed.includes(k));
+    if (unexpected.length) {
+      return res.status(400).json({ error: `Unexpected field(s): ${unexpected.join(', ')}` });
+    }
+    next();
+  };
+}
+
+// Authorization: the JWT user must be a player in this exact session.
+// Non-members get 403 whether or not the session exists, so IDs can't be probed.
+function requireSessionMember({ from = 'body', allowedStatuses = null } = {}) {
+  return (req, res, next) => {
+    const sessionId = from === 'params' ? req.params.sessionId : req.body?.sessionId;
+    if (!isUuid(sessionId)) return res.status(400).json({ error: 'Invalid sessionId' });
+    const row = db.prepare(`
+      SELECT gs.* FROM session_players sp JOIN game_sessions gs ON gs.id = sp.session_id
+      WHERE sp.session_id = ? AND sp.user_id = ?
+    `).get(sessionId, req.user.id);
+    if (!row) return res.status(403).json({ error: 'Not a member of this session' });
+    if (allowedStatuses && !allowedStatuses.includes(row.status)) {
+      return res.status(409).json({ error: `Not allowed while the session is '${row.status}'` });
+    }
+    req.gameSession = row;
+    next();
+  };
+}
+
+// Server-originated realtime events. Call only after the DB write has committed.
+function broadcast(req, sessionId, event, payload) {
+  const io = req.app.get('io');
+  if (io) io.to(`session:${sessionId}`).emit(event, payload);
+}
+
+function usernameOf(userId) {
+  return db.prepare('SELECT username FROM users WHERE id = ?').get(userId)?.username || 'A player';
+}
+
+function teamShort(teamId) {
+  return IPL_TEAMS.find(t => t.id === teamId)?.short || String(teamId).toUpperCase();
+}
+
+function teamCount(sessionId, userId) {
+  return db.prepare('SELECT COUNT(*) AS c FROM team_ownerships WHERE session_id = ? AND user_id = ?').get(sessionId, userId).c;
+}
+
+// The only sources of match outcomes: the static seed / live provider (liveScores.js),
+// then an admin-entered official result. Clients never supply outcomes.
+async function getTrustedSchedule() {
+  const schedule = await getEffectiveSchedule();
+  const official = new Map(db.prepare('SELECT * FROM official_results').all().map(r => [r.match_id, r]));
+  return schedule.map((m) => {
+    if (extractOutcome(m)) return m;
+    const o = official.get(m.id);
+    if (!o) return m;
+    return { ...m, result: o.is_draw ? { isDraw: true, method: 'admin' } : { winner: o.winner_team, method: 'admin' } };
+  });
+}
 
 function getPendingBidTeam(sessionId) {
   const selections = db.prepare('SELECT * FROM home_team_selections WHERE session_id = ?').all(sessionId);
@@ -104,7 +184,7 @@ function resolveActiveAuctionRound(sessionId) {
   if (!teamAlreadyOwned && allBids.length > 0) {
     const validBids = allBids.filter((bid) => {
       const player = db.prepare('SELECT credits FROM session_players WHERE session_id = ? AND user_id = ?').get(sessionId, bid.user_id);
-      return player && player.credits >= bid.amount;
+      return player && player.credits >= bid.amount && teamCount(sessionId, bid.user_id) < MAX_TEAMS;
     });
     winnerBid = validBids.length > 0 ? validBids[0] : null;
   }
@@ -142,7 +222,8 @@ function resolveActiveAuctionRound(sessionId) {
   };
 }
 
-function syncAuctionState(sessionId) {
+// Runs inside a transaction so a round is resolved (credits, ownership, next round) all-or-nothing.
+const syncAuctionState = db.transaction(function syncAuctionStateTx(sessionId) {
   if (getPendingBidTeam(sessionId)) return;
 
   startAuctionIfReady(sessionId);
@@ -156,7 +237,7 @@ function syncAuctionState(sessionId) {
     auction = getAuctionState(sessionId);
     guard += 1;
   }
-}
+});
 
 // Helper: get full session state
 function getSessionState(sessionId, userId) {
@@ -203,7 +284,13 @@ function getSessionState(sessionId, userId) {
   };
 }
 
-function applyMatchResultToSession({ sessionId, match, winnerTeamId, isDraw, actorUserId, strictChoice = true }) {
+// winnerTeamId / isDraw must come from getTrustedSchedule(), never from a request.
+// Wrapped in a transaction: points, stats and the result row commit together or not at all.
+const applyMatchResultToSession = db.transaction(function applyMatchResultTx({ sessionId, match, winnerTeamId, isDraw, actorUserId, strictChoice = true }) {
+  const sessionRow = db.prepare('SELECT status FROM game_sessions WHERE id = ?').get(sessionId);
+  if (!sessionRow) return { ok: false, code: 'session-not-found', error: 'Session not found' };
+  if (sessionRow.status !== 'active') return { ok: false, code: 'not-active', error: 'Season has not started for this session' };
+
   const already = db.prepare('SELECT id FROM match_results WHERE session_id = ? AND match_id = ?').get(sessionId, match.id);
   if (already) return { ok: false, code: 'already-processed', error: 'Match already processed' };
 
@@ -298,8 +385,8 @@ function applyMatchResultToSession({ sessionId, match, winnerTeamId, isDraw, act
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(uuidv4(), sessionId, match.id, winnerTeam, loserTeam, winnerId, loserId, pointsW, pointsL, isDraw ? 1 : 0);
 
-  return { ok: true, isDraw };
-}
+  return { ok: true, isDraw, matchId: match.id, winnerUserId: isDraw ? null : winnerId, winnerTeam, pointsW };
+});
 
 function extractOutcome(match) {
   const source = match.suggestedResult || match.result || null;
@@ -309,8 +396,8 @@ function extractOutcome(match) {
   return null;
 }
 
-function autoApplyFinishedMatches({ sessionId, effectiveSchedule, actorUserId }) {
-  let appliedCount = 0;
+const autoApplyFinishedMatches = db.transaction(function autoApplyTx({ sessionId, effectiveSchedule, actorUserId }) {
+  const applied = [];
 
   for (const match of effectiveSchedule) {
     const outcome = extractOutcome(match);
@@ -325,13 +412,13 @@ function autoApplyFinishedMatches({ sessionId, effectiveSchedule, actorUserId })
       strictChoice: false,
     });
 
-    if (result.ok) appliedCount += 1;
+    if (result.ok) applied.push(result);
   }
 
-  return appliedCount;
-}
+  return applied;
+});
 
-function seedTeamsForTesting(sessionId) {
+const seedTeamsForTesting = db.transaction(function seedTeamsForTestingTx(sessionId) {
   const state = getSessionState(sessionId, null);
   if (!state) return { ok: false, error: 'Session not found' };
 
@@ -356,68 +443,82 @@ function seedTeamsForTesting(sessionId) {
   db.prepare('UPDATE session_players SET credits = ? WHERE session_id = ?').run(STARTING_CREDITS, sessionId);
 
   return { ok: true };
+});
+
+const ACTIVE_SESSION_SQL = `
+  SELECT gs.* FROM game_sessions gs
+  JOIN session_players sp ON gs.id = sp.session_id
+  WHERE sp.user_id = ? AND gs.status != 'finished'
+  ORDER BY
+    CASE gs.status
+      WHEN 'active' THEN 0
+      WHEN 'auction' THEN 1
+      ELSE 2
+    END ASC,
+    (SELECT COUNT(*) FROM session_players sp2 WHERE sp2.session_id = gs.id) DESC,
+    gs.created_at DESC
+  LIMIT 1
+`;
+
+function newInviteCode() {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    let code = '';
+    for (let i = 0; i < 6; i += 1) code += INVITE_ALPHABET[crypto.randomInt(INVITE_ALPHABET.length)];
+    if (!db.prepare('SELECT 1 FROM game_sessions WHERE invite_code = ?').get(code)) return code;
+  }
+  throw new Error('Could not allocate a unique invite code');
 }
 
+const createSessionTx = db.transaction((userId) => {
+  const existingSession = db.prepare(ACTIVE_SESSION_SQL).get(userId);
+  if (existingSession) return existingSession.id;
+
+  const id = uuidv4();
+  db.prepare('INSERT INTO game_sessions (id, status, invite_code, creator_id) VALUES (?, ?, ?, ?)').run(id, 'waiting', newInviteCode(), userId);
+  db.prepare('INSERT INTO session_players (session_id, user_id, credits) VALUES (?, ?, ?)').run(id, userId, STARTING_CREDITS);
+  upsertAuctionState(id, { currentTeamIndex: 0, activeTeamId: null, roundEndsAt: null, status: 'pending' });
+  return id;
+});
+
 // POST /api/game/session - create session
-router.post('/session', authMiddleware, (req, res) => {
+router.post('/session', authMiddleware, allowFields([]), (req, res) => {
   try {
-    const existingSession = db.prepare(`
-      SELECT gs.* FROM game_sessions gs
-      JOIN session_players sp ON gs.id = sp.session_id
-      WHERE sp.user_id = ? AND gs.status != 'finished'
-      ORDER BY
-        CASE gs.status
-          WHEN 'active' THEN 0
-          WHEN 'auction' THEN 1
-          ELSE 2
-        END ASC,
-        (SELECT COUNT(*) FROM session_players sp2 WHERE sp2.session_id = gs.id) DESC,
-        gs.created_at DESC
-      LIMIT 1
-    `).get(req.user.id);
-
-    if (existingSession) {
-      const state = getSessionState(existingSession.id, req.user.id);
-      return res.json({ session: state });
-    }
-
-    const id = uuidv4();
-    const inviteCode = Math.random().toString(36).substring(2, 8).toUpperCase();
-    db.prepare('INSERT INTO game_sessions (id, status, invite_code, creator_id) VALUES (?, ?, ?, ?)').run(id, 'waiting', inviteCode, req.user.id);
-    db.prepare('INSERT INTO session_players (session_id, user_id, credits) VALUES (?, ?, ?)').run(id, req.user.id, STARTING_CREDITS);
-    upsertAuctionState(id, { currentTeamIndex: 0, activeTeamId: null, roundEndsAt: null, status: 'pending' });
-
-    const state = getSessionState(id, req.user.id);
-    res.json({ session: state });
+    const sessionId = createSessionTx(req.user.id);
+    res.json({ session: getSessionState(sessionId, req.user.id) });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });
   }
 });
 
+const joinSessionTx = db.transaction((inviteCode, userId) => {
+  const session = db.prepare("SELECT * FROM game_sessions WHERE invite_code = ? AND status = 'waiting'").get(inviteCode);
+  if (!session) return { status: 404, error: 'Session not found or already full' };
+
+  const alreadyIn = db.prepare('SELECT 1 FROM session_players WHERE session_id = ? AND user_id = ?').get(session.id, userId);
+  if (alreadyIn) return { sessionId: session.id };
+
+  const playerCount = db.prepare('SELECT COUNT(*) as c FROM session_players WHERE session_id = ?').get(session.id).c;
+  if (playerCount >= 2) return { status: 400, error: 'Session already has 2 players' };
+
+  db.prepare('INSERT INTO session_players (session_id, user_id, credits) VALUES (?, ?, ?)').run(session.id, userId, STARTING_CREDITS);
+  db.prepare("UPDATE game_sessions SET status = 'auction' WHERE id = ? AND status = 'waiting'").run(session.id);
+  upsertAuctionState(session.id, { currentTeamIndex: 0, activeTeamId: null, roundEndsAt: null, status: 'pending' });
+  syncAuctionState(session.id);
+  return { sessionId: session.id, joined: true };
+});
+
 // POST /api/game/session/join - join via invite code
-router.post('/session/join', authMiddleware, (req, res) => {
+router.post('/session/join', authMiddleware, allowFields(['inviteCode']), (req, res) => {
   try {
-    const { inviteCode } = req.body;
-    const session = db.prepare("SELECT * FROM game_sessions WHERE invite_code = ? AND status = 'waiting'").get(inviteCode);
-    if (!session) return res.status(404).json({ error: 'Session not found or already full' });
+    const raw = req.body.inviteCode;
+    const inviteCode = typeof raw === 'string' ? raw.trim().toUpperCase() : '';
+    if (!INVITE_CODE_RE.test(inviteCode)) return res.status(400).json({ error: 'Invalid invite code' });
 
-    const alreadyIn = db.prepare('SELECT * FROM session_players WHERE session_id = ? AND user_id = ?').get(session.id, req.user.id);
-    if (alreadyIn) {
-      const state = getSessionState(session.id, req.user.id);
-      return res.json({ session: state });
-    }
-
-    const playerCount = db.prepare('SELECT COUNT(*) as c FROM session_players WHERE session_id = ?').get(session.id).c;
-    if (playerCount >= 2) return res.status(400).json({ error: 'Session already has 2 players' });
-
-    db.prepare('INSERT INTO session_players (session_id, user_id, credits) VALUES (?, ?, ?)').run(session.id, req.user.id, STARTING_CREDITS);
-    db.prepare("UPDATE game_sessions SET status = 'auction' WHERE id = ?").run(session.id);
-    upsertAuctionState(session.id, { currentTeamIndex: 0, activeTeamId: null, roundEndsAt: null, status: 'pending' });
-    syncAuctionState(session.id);
-
-    const state = getSessionState(session.id, req.user.id);
-    res.json({ session: state });
+    const result = joinSessionTx(inviteCode, req.user.id);
+    if (result.error) return res.status(result.status).json({ error: result.error });
+    if (result.joined) broadcast(req, result.sessionId, 'state-update', { event: 'player-joined-session' });
+    res.json({ session: getSessionState(result.sessionId, req.user.id) });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });
@@ -427,56 +528,34 @@ router.post('/session/join', authMiddleware, (req, res) => {
 // GET /api/game/session - get current session
 router.get('/session', authMiddleware, (req, res) => {
   try {
-    const sessionRow = db.prepare(`
-      SELECT gs.* FROM game_sessions gs
-      JOIN session_players sp ON gs.id = sp.session_id
-      WHERE sp.user_id = ? AND gs.status != 'finished'
-      ORDER BY
-        CASE gs.status
-          WHEN 'active' THEN 0
-          WHEN 'auction' THEN 1
-          ELSE 2
-        END ASC,
-        (SELECT COUNT(*) FROM session_players sp2 WHERE sp2.session_id = gs.id) DESC,
-        gs.created_at DESC
-      LIMIT 1
-    `).get(req.user.id);
-
+    const sessionRow = db.prepare(ACTIVE_SESSION_SQL).get(req.user.id);
     if (!sessionRow) return res.json({ session: null });
-  syncAuctionState(sessionRow.id);
-    const state = getSessionState(sessionRow.id, req.user.id);
-    res.json({ session: state });
+    syncAuctionState(sessionRow.id);
+    res.json({ session: getSessionState(sessionRow.id, req.user.id) });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });
   }
 });
 
+const leaveSessionTx = db.transaction((userId) => {
+  const sessionRow = db.prepare(ACTIVE_SESSION_SQL).get(userId);
+  if (!sessionRow) return null;
+  db.prepare("UPDATE game_sessions SET status = 'finished' WHERE id = ?").run(sessionRow.id);
+  db.prepare('DELETE FROM bids WHERE session_id = ?').run(sessionRow.id);
+  db.prepare('DELETE FROM home_team_selections WHERE session_id = ?').run(sessionRow.id);
+  db.prepare('DELETE FROM auction_state WHERE session_id = ?').run(sessionRow.id);
+  return sessionRow.id;
+});
+
 // POST /api/game/session/leave - leave current ongoing session
-router.post('/session/leave', authMiddleware, (req, res) => {
+router.post('/session/leave', authMiddleware, allowFields([]), (req, res) => {
   try {
-    const sessionRow = db.prepare(`
-      SELECT gs.* FROM game_sessions gs
-      JOIN session_players sp ON gs.id = sp.session_id
-      WHERE sp.user_id = ? AND gs.status != 'finished'
-      ORDER BY
-        CASE gs.status
-          WHEN 'active' THEN 0
-          WHEN 'auction' THEN 1
-          ELSE 2
-        END ASC,
-        (SELECT COUNT(*) FROM session_players sp2 WHERE sp2.session_id = gs.id) DESC,
-        gs.created_at DESC
-      LIMIT 1
-    `).get(req.user.id);
+    const sessionId = leaveSessionTx(req.user.id);
+    if (!sessionId) return res.json({ left: false, session: null });
 
-    if (!sessionRow) return res.json({ left: false, session: null });
-
-    db.prepare("UPDATE game_sessions SET status = 'finished' WHERE id = ?").run(sessionRow.id);
-    db.prepare('DELETE FROM bids WHERE session_id = ?').run(sessionRow.id);
-    db.prepare('DELETE FROM home_team_selections WHERE session_id = ?').run(sessionRow.id);
-    db.prepare('DELETE FROM auction_state WHERE session_id = ?').run(sessionRow.id);
-
+    broadcast(req, sessionId, 'state-update', { event: 'session-ended' });
+    req.app.get('io')?.in(`session:${sessionId}`).socketsLeave(`session:${sessionId}`);
     res.json({ left: true, session: null });
   } catch (err) {
     console.error(err);
@@ -484,122 +563,139 @@ router.post('/session/leave', authMiddleware, (req, res) => {
   }
 });
 
+const selectHomeTeamTx = db.transaction((sessionId, userId, teamId) => {
+  const state = getSessionState(sessionId, userId);
+  const myPlayer = state.players.find(p => p.id === userId);
+  if (!myPlayer) return { status: 403, error: 'Not in this session' };
+  if (myPlayer.homeTeam) return { status: 400, error: 'You already selected a home team' };
+
+  const alreadyOwned = state.players.some(p => p.teams.some(t => t.teamId === teamId));
+  if (alreadyOwned) return { status: 400, error: 'Team already owned' };
+  if (myPlayer.teams.length >= MAX_TEAMS) return { status: 400, error: 'Squad full' };
+
+  db.prepare('INSERT OR REPLACE INTO home_team_selections (session_id, user_id, team_id) VALUES (?, ?, ?)').run(sessionId, userId, teamId);
+
+  const otherPlayer = state.players.find(p => p.id !== userId);
+  const otherSelection = otherPlayer
+    ? db.prepare('SELECT * FROM home_team_selections WHERE session_id = ? AND user_id = ?').get(sessionId, otherPlayer.id)
+    : null;
+
+  let conflict = false;
+  if (otherSelection && otherSelection.team_id === teamId) {
+    conflict = true; // Both want the same team: bidding war, don't auto-assign.
+  } else {
+    db.prepare('INSERT INTO team_ownerships (id, session_id, user_id, team_id, price_paid, is_home_team) VALUES (?, ?, ?, ?, 0, 1)').run(uuidv4(), sessionId, userId, teamId);
+  }
+
+  syncAuctionState(sessionId);
+  return { conflict };
+});
+
 // POST /api/game/home-team - select home team (free)
-router.post('/home-team', authMiddleware, (req, res) => {
+router.post('/home-team', authMiddleware, requireSessionMember({ allowedStatuses: ['waiting', 'auction'] }), allowFields(['sessionId', 'teamId']), (req, res) => {
   try {
     const { sessionId, teamId } = req.body;
-    const state = getSessionState(sessionId, req.user.id);
-    if (!state) return res.status(404).json({ error: 'Session not found' });
+    if (!isTeamId(teamId)) return res.status(400).json({ error: 'Invalid teamId' });
 
-    const myPlayer = state.players.find(p => p.id === req.user.id);
-    if (!myPlayer) return res.status(403).json({ error: 'Not in this session' });
-    if (myPlayer.homeTeam) return res.status(400).json({ error: 'You already selected a home team' });
+    const result = selectHomeTeamTx(sessionId, req.user.id, teamId);
+    if (result.error) return res.status(result.status).json({ error: result.error });
 
-    // Check not already owned
-    const alreadyOwned = state.players.some(p => p.teams.some(t => t.teamId === teamId));
-    if (alreadyOwned) return res.status(400).json({ error: 'Team already owned' });
-
-    // Check squad not full
-    if (myPlayer.teams.length >= MAX_TEAMS) return res.status(400).json({ error: 'Squad full' });
-
-    // Insert home selection
-    db.prepare('INSERT OR REPLACE INTO home_team_selections (session_id, user_id, team_id) VALUES (?, ?, ?)').run(sessionId, req.user.id, teamId);
-
-    // Check if other player also selected
-    const otherPlayer = state.players.find(p => p.id !== req.user.id);
-    const otherSelection = db.prepare('SELECT * FROM home_team_selections WHERE session_id = ? AND user_id = ?').get(sessionId, otherPlayer?.id);
-
-    let conflict = false;
-    if (otherSelection && otherSelection.team_id === teamId) {
-      // Both want same team G�� bidding war, don't auto-assign
-      conflict = true;
-    } else {
-      // No conflict G�� assign for free
-      db.prepare('INSERT INTO team_ownerships (id, session_id, user_id, team_id, price_paid, is_home_team) VALUES (?, ?, ?, ?, 0, 1)').run(uuidv4(), sessionId, req.user.id, teamId);
-    }
-
-    syncAuctionState(sessionId);
-
-    const newState = getSessionState(sessionId, req.user.id);
-    res.json({ session: newState, conflict });
+    const { username } = req.user;
+    broadcast(req, sessionId, 'auction-update', {
+      type: result.conflict ? 'bid-war-started' : 'home-team-selected',
+      teamId, userId: req.user.id, username,
+      message: result.conflict
+        ? `⚔️ Both players want ${teamShort(teamId)}! Bidding war begins!`
+        : `${username} selected ${teamShort(teamId)} as home team (FREE)`,
+    });
+    res.json({ session: getSessionState(sessionId, req.user.id), conflict: result.conflict });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });
   }
 });
 
-// POST /api/game/bid - place a bid (for home team conflict)
-router.post('/bid', authMiddleware, (req, res) => {
+const placeBidTx = db.transaction((sessionId, userId, teamId, amount) => {
+  const playerBalance = db.prepare('SELECT credits FROM session_players WHERE session_id = ? AND user_id = ?').get(sessionId, userId);
+  if (!playerBalance) return { status: 403, error: 'Not in this session' };
+  if (playerBalance.credits < amount) return { status: 400, error: 'Insufficient cr' };
+
+  const state = getSessionState(sessionId, userId);
+  const pendingHomeBid = getPendingBidTeam(sessionId);
+  if (pendingHomeBid) {
+    if (teamId !== pendingHomeBid) return { status: 400, error: 'Home-team bid is active for a different team' };
+
+    db.prepare('DELETE FROM bids WHERE session_id = ? AND team_id = ? AND user_id = ?').run(sessionId, teamId, userId);
+    db.prepare('INSERT INTO bids (id, session_id, team_id, user_id, amount) VALUES (?, ?, ?, ?, ?)').run(uuidv4(), sessionId, teamId, userId, amount);
+
+    const allBids = db.prepare('SELECT * FROM bids WHERE session_id = ? AND team_id = ? ORDER BY amount DESC, created_at ASC').all(sessionId, teamId);
+    let resolved = null;
+    if (allBids.length >= state.players.length) {
+      if (allBids[0].amount === allBids[1].amount) {
+        resolved = { tie: true };
+      } else {
+        const winner = allBids[0];
+        db.prepare('UPDATE session_players SET credits = credits - ? WHERE session_id = ? AND user_id = ?').run(winner.amount, sessionId, winner.user_id);
+        db.prepare('INSERT INTO team_ownerships (id, session_id, user_id, team_id, price_paid, is_home_team) VALUES (?, ?, ?, ?, ?, 1)').run(uuidv4(), sessionId, winner.user_id, teamId, winner.amount);
+        db.prepare('DELETE FROM bids WHERE session_id = ? AND team_id = ?').run(sessionId, teamId);
+        db.prepare('DELETE FROM home_team_selections WHERE session_id = ?').run(sessionId);
+        resolved = { winnerId: winner.user_id, winnerName: usernameOf(winner.user_id), amount: winner.amount };
+      }
+    }
+    syncAuctionState(sessionId);
+    return { body: { resolved } };
+  }
+
+  if (!bothPlayersHaveHomeTeams(sessionId)) {
+    return { status: 400, error: 'Both players must choose home teams before auction starts' };
+  }
+
+  syncAuctionState(sessionId);
+  const auction = getAuctionState(sessionId);
+  if (!auction || auction.status !== 'running' || !auction.active_team_id) {
+    return { status: 400, error: 'No active auction round', includeSession: true };
+  }
+  if (teamId !== auction.active_team_id) {
+    return { status: 400, error: 'This team is not active for bidding right now' };
+  }
+  const now = Math.floor(Date.now() / 1000);
+  if (auction.round_ends_at && now >= auction.round_ends_at) {
+    return { status: 400, error: 'Round ended. Next team is active now.', includeSession: true };
+  }
+  if (teamCount(sessionId, userId) >= MAX_TEAMS) {
+    return { status: 400, error: `Squad full (max ${MAX_TEAMS} teams)` };
+  }
+
+  db.prepare('DELETE FROM bids WHERE session_id = ? AND team_id = ? AND user_id = ?').run(sessionId, teamId, userId);
+  db.prepare('INSERT INTO bids (id, session_id, team_id, user_id, amount) VALUES (?, ?, ?, ?, ?)').run(uuidv4(), sessionId, teamId, userId, amount);
+  return { body: { accepted: true, roundEndsAt: auction.round_ends_at } };
+});
+
+// POST /api/game/bid - place a bid (home-team conflict or active auction round)
+router.post('/bid', authMiddleware, requireSessionMember({ allowedStatuses: ['auction'] }), allowFields(['sessionId', 'teamId', 'amount']), (req, res) => {
   try {
     const { sessionId, teamId, amount } = req.body;
-    if (!amount || amount < 1) return res.status(400).json({ error: 'Bid must be at least 1 cr' });
-
-    const playerBalance = db.prepare('SELECT credits FROM session_players WHERE session_id = ? AND user_id = ?').get(sessionId, req.user.id);
-    if (!playerBalance) return res.status(403).json({ error: 'Not in this session' });
-    if (playerBalance.credits < amount) return res.status(400).json({ error: 'Insufficient cr' });
-
-    const state = getSessionState(sessionId, req.user.id);
-    if (!state) return res.status(404).json({ error: 'Session not found' });
-    if (!state.players.find(p => p.id === req.user.id)) return res.status(403).json({ error: 'Not in this session' });
-
-    const pendingHomeBid = getPendingBidTeam(sessionId);
-    if (pendingHomeBid) {
-      if (teamId !== pendingHomeBid) return res.status(400).json({ error: 'Home-team bid is active for a different team' });
-
-      db.prepare('DELETE FROM bids WHERE session_id = ? AND team_id = ? AND user_id = ?').run(sessionId, teamId, req.user.id);
-      db.prepare('INSERT INTO bids (id, session_id, team_id, user_id, amount) VALUES (?, ?, ?, ?, ?)').run(uuidv4(), sessionId, teamId, req.user.id, amount);
-
-      const allBids = db.prepare('SELECT * FROM bids WHERE session_id = ? AND team_id = ? ORDER BY amount DESC, created_at ASC').all(sessionId, teamId);
-      const playerCount = state.players.length;
-
-      let resolved = null;
-      if (allBids.length >= playerCount) {
-        if (allBids[0].amount === allBids[1].amount) {
-          resolved = { tie: true };
-        } else {
-          const winner = allBids[0];
-          db.prepare('UPDATE session_players SET credits = credits - ? WHERE session_id = ? AND user_id = ?').run(winner.amount, sessionId, winner.user_id);
-          db.prepare('INSERT INTO team_ownerships (id, session_id, user_id, team_id, price_paid, is_home_team) VALUES (?, ?, ?, ?, ?, 1)').run(uuidv4(), sessionId, winner.user_id, teamId, winner.amount);
-          db.prepare('DELETE FROM bids WHERE session_id = ? AND team_id = ?').run(sessionId, teamId);
-          db.prepare('DELETE FROM home_team_selections WHERE session_id = ?').run(sessionId);
-
-          const winnerUser = db.prepare('SELECT username FROM users WHERE id = ?').get(winner.user_id);
-          resolved = { winnerId: winner.user_id, winnerName: winnerUser.username, amount: winner.amount };
-        }
-      }
-
-      syncAuctionState(sessionId);
-      const newState = getSessionState(sessionId, req.user.id);
-      return res.json({ session: newState, resolved });
+    if (!isTeamId(teamId)) return res.status(400).json({ error: 'Invalid teamId' });
+    if (!Number.isInteger(amount) || amount < 1 || amount > STARTING_CREDITS) {
+      return res.status(400).json({ error: `Bid must be a whole number between 1 and ${STARTING_CREDITS} cr` });
     }
 
-    if (!bothPlayersHaveHomeTeams(sessionId)) {
-      return res.status(400).json({ error: 'Both players must choose home teams before auction starts' });
+    const result = placeBidTx(sessionId, req.user.id, teamId, amount);
+    if (result.error) {
+      const body = { error: result.error };
+      if (result.includeSession) body.session = getSessionState(sessionId, req.user.id);
+      return res.status(result.status).json(body);
     }
 
-    syncAuctionState(sessionId);
-    const auction = getAuctionState(sessionId);
-    if (!auction || auction.status !== 'running' || !auction.active_team_id) {
-      const latestState = getSessionState(sessionId, req.user.id);
-      return res.status(400).json({ error: 'No active auction round', session: latestState });
-    }
+    const { username } = req.user;
+    const resolved = result.body.resolved;
+    broadcast(req, sessionId, 'auction-update', resolved?.winnerName
+      ? { type: 'bid-war-resolved', teamId, userId: resolved.winnerId, username: resolved.winnerName,
+          message: `${resolved.winnerName} won ${teamShort(teamId)} for ${resolved.amount} cr!` }
+      : { type: 'bid-placed', teamId, userId: req.user.id, username,
+          message: `${username} placed a bid on ${teamShort(teamId)}` });
 
-    if (teamId !== auction.active_team_id) {
-      return res.status(400).json({ error: 'This team is not active for bidding right now' });
-    }
-
-    const now = Math.floor(Date.now() / 1000);
-    if (auction.round_ends_at && now >= auction.round_ends_at) {
-      syncAuctionState(sessionId);
-      const latestState = getSessionState(sessionId, req.user.id);
-      return res.status(400).json({ error: 'Round ended. Next team is active now.', session: latestState });
-    }
-
-    db.prepare('DELETE FROM bids WHERE session_id = ? AND team_id = ? AND user_id = ?').run(sessionId, teamId, req.user.id);
-    db.prepare('INSERT INTO bids (id, session_id, team_id, user_id, amount) VALUES (?, ?, ?, ?, ?)').run(uuidv4(), sessionId, teamId, req.user.id, amount);
-
-    const newState = getSessionState(sessionId, req.user.id);
-    res.json({ session: newState, accepted: true, roundEndsAt: auction.round_ends_at });
+    res.json({ session: getSessionState(sessionId, req.user.id), ...result.body });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });
@@ -608,71 +704,82 @@ router.post('/bid', authMiddleware, (req, res) => {
 
 // POST /api/game/buy-team - buy a team outright
 router.post('/buy-team', authMiddleware, (req, res) => {
-  try {
-    res.status(400).json({ error: 'Direct buy is disabled. Use the active 20-second bid round.' });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Server error' });
+  res.status(400).json({ error: 'Direct buy is disabled. Use the active 20-second bid round.' });
+});
+
+const finalizeAuctionTx = db.transaction((sessionId) => {
+  syncAuctionState(sessionId);
+  const auction = getAuctionState(sessionId);
+  if (!auction || auction.status !== 'completed') {
+    return { status: 400, error: 'Auction is still running. Complete all team rounds first.' };
   }
+  const changed = db.prepare("UPDATE game_sessions SET status = 'active', started_at = strftime('%s','now') WHERE id = ? AND status = 'auction'").run(sessionId).changes;
+  if (!changed) return { status: 409, error: 'Season already started' };
+  return {};
 });
 
 // POST /api/game/finalize-auction
-router.post('/finalize-auction', authMiddleware, (req, res) => {
+router.post('/finalize-auction', authMiddleware, requireSessionMember({ allowedStatuses: ['auction'] }), allowFields(['sessionId']), (req, res) => {
   try {
     const { sessionId } = req.body;
-    syncAuctionState(sessionId);
-    const auction = getAuctionState(sessionId);
-    if (auction && auction.status !== 'completed') {
-      return res.status(400).json({ error: 'Auction is still running. Complete all team rounds first.' });
-    }
-    db.prepare("UPDATE game_sessions SET status = 'active', started_at = strftime('%s','now') WHERE id = ?").run(sessionId);
-    const state = getSessionState(sessionId, req.user.id);
-    res.json({ session: state });
+    const result = finalizeAuctionTx(sessionId);
+    if (result.error) return res.status(result.status).json({ error: result.error });
+    broadcast(req, sessionId, 'state-update', { event: 'season-started' });
+    res.json({ session: getSessionState(sessionId, req.user.id) });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });
   }
 });
+
+function requireTestHelper(req, res, next) {
+  if (!ALLOW_TEST_HELPER) return res.status(403).json({ error: 'Test helper disabled' });
+  next();
+}
 
 // POST /api/game/debug/seed-session - test-only helper to skip bidding and jump to active play
-router.post('/debug/seed-session', authMiddleware, (req, res) => {
+router.post('/debug/seed-session', authMiddleware, requireTestHelper, requireSessionMember(), allowFields(['sessionId']), (req, res) => {
   try {
-    if (!ALLOW_TEST_HELPER) {
-      return res.status(403).json({ error: 'Test helper disabled' });
-    }
-
     const { sessionId } = req.body;
-    if (!sessionId) return res.status(400).json({ error: 'sessionId is required' });
-
     const result = seedTeamsForTesting(sessionId);
     if (!result.ok) return res.status(400).json({ error: result.error });
-
-    const state = getSessionState(sessionId, req.user.id);
-    return res.json({ session: state, seeded: true });
+    broadcast(req, sessionId, 'state-update', { event: 'session-seeded' });
+    return res.json({ session: getSessionState(sessionId, req.user.id), seeded: true });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });
   }
 });
 
+function announceAppliedResults(req, sessionId, applied) {
+  for (const r of applied) {
+    const message = r.isDraw
+      ? `🤝 Match ${r.matchId} drawn: both players earn 1 point`
+      : `🏆 ${usernameOf(r.winnerUserId)} earns ${r.pointsW} points (${teamShort(r.winnerTeam)} won)`;
+    broadcast(req, sessionId, 'match-result', {
+      matchId: r.matchId,
+      winnerName: r.isDraw ? null : usernameOf(r.winnerUserId),
+      points: r.isDraw ? 1 : r.pointsW,
+      message,
+    });
+  }
+}
+
 // GET /api/game/matches/:sessionId
-router.get('/matches/:sessionId', authMiddleware, async (req, res) => {
+router.get('/matches/:sessionId', authMiddleware, requireSessionMember({ from: 'params' }), async (req, res) => {
   try {
     const { sessionId } = req.params;
-    let state = getSessionState(sessionId, req.user.id);
-    if (!state) return res.status(404).json({ error: 'Session not found' });
+    const effectiveSchedule = await getTrustedSchedule();
 
-    const effectiveSchedule = await getEffectiveSchedule();
-
-    const appliedCount = autoApplyFinishedMatches({
-      sessionId,
-      effectiveSchedule,
-      actorUserId: req.user.id,
-    });
-
-    if (appliedCount > 0) {
-      state = getSessionState(sessionId, req.user.id);
+    // Results are applied only once the season is active, and only from trusted sources.
+    let applied = [];
+    if (req.gameSession.status === 'active') {
+      applied = autoApplyFinishedMatches({ sessionId, effectiveSchedule, actorUserId: req.user.id });
+      announceAppliedResults(req, sessionId, applied);
     }
+
+    const state = getSessionState(sessionId, req.user.id);
+    if (!state) return res.status(404).json({ error: 'Session not found' });
 
     const matchResultsDb = db.prepare('SELECT * FROM match_results WHERE session_id = ?').all(sessionId);
     const resultByMatchId = new Map(matchResultsDb.map(r => [r.match_id, r]));
@@ -710,50 +817,99 @@ router.get('/matches/:sessionId', authMiddleware, async (req, res) => {
   }
 });
 
+const matchChoiceTx = db.transaction((sessionId, userId, match, chosenTeamId) => {
+  const state = getSessionState(sessionId, userId);
+  if (db.prepare('SELECT 1 FROM match_results WHERE session_id = ? AND match_id = ?').get(sessionId, match.id)) {
+    return { status: 409, error: 'Match already processed' };
+  }
+
+  const allOwnedTeams = state.players.flatMap(p => p.teams.map(t => ({ teamId: t.teamId, userId: p.id })));
+  const t1Owner = allOwnedTeams.find(o => o.teamId === match.team1);
+  const t2Owner = allOwnedTeams.find(o => o.teamId === match.team2);
+
+  if (!t1Owner || !t2Owner) return { status: 400, error: 'Both teams must be owned before choosing a side' };
+  if (t1Owner.userId !== t2Owner.userId) return { status: 400, error: 'This match is already a normal contest' };
+  if (t1Owner.userId !== userId) return { status: 403, error: 'Only the team owner can choose a side' };
+
+  const opponent = state.players.find(p => p.id !== userId);
+  if (!opponent) return { status: 400, error: 'Opponent player not found' };
+
+  db.prepare(`
+    INSERT INTO match_choices (session_id, match_id, chosen_team_id, chosen_user_id, opponent_user_id)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(session_id, match_id) DO UPDATE SET
+      chosen_team_id = excluded.chosen_team_id,
+      chosen_user_id = excluded.chosen_user_id,
+      opponent_user_id = excluded.opponent_user_id,
+      updated_at = strftime('%s','now')
+  `).run(sessionId, match.id, chosenTeamId, userId, opponent.id);
+
+  return { choice: { matchId: match.id, chosenTeamId, chosenUserId: userId, opponentUserId: opponent.id } };
+});
+
 // POST /api/game/match-choice
-router.post('/match-choice', authMiddleware, async (req, res) => {
+router.post('/match-choice', authMiddleware, requireSessionMember({ allowedStatuses: ['active'] }), allowFields(['sessionId', 'matchId', 'chosenTeamId']), async (req, res) => {
   try {
     const { sessionId, matchId, chosenTeamId } = req.body;
+    if (!isMatchId(matchId)) return res.status(400).json({ error: 'Invalid matchId' });
+    if (!isTeamId(chosenTeamId)) return res.status(400).json({ error: 'Invalid team choice' });
 
-    const effectiveSchedule = await getEffectiveSchedule();
+    const effectiveSchedule = await getTrustedSchedule();
     const match = effectiveSchedule.find(m => m.id === matchId);
     if (!match) return res.status(404).json({ error: 'Match not found' });
     if (chosenTeamId !== match.team1 && chosenTeamId !== match.team2) {
       return res.status(400).json({ error: 'Invalid team choice' });
     }
+    // Sides lock before the match: otherwise the owner could wait for the result and pick the winner.
+    if (extractOutcome(match)) return res.status(409).json({ error: 'Result already known; sides are locked' });
+    if (!match.date || match.date <= todayUtc()) {
+      return res.status(409).json({ error: 'Sides lock at the start of match day (UTC)' });
+    }
 
-    const state = getSessionState(sessionId, req.user.id);
-    if (!state) return res.status(404).json({ error: 'Session not found' });
+    const result = matchChoiceTx(sessionId, req.user.id, match, chosenTeamId);
+    if (result.error) return res.status(result.status).json({ error: result.error });
 
-    const allOwnedTeams = state.players.flatMap(p => p.teams.map(t => ({ teamId: t.teamId, userId: p.id })));
-    const t1Owner = allOwnedTeams.find(o => o.teamId === match.team1);
-    const t2Owner = allOwnedTeams.find(o => o.teamId === match.team2);
+    broadcast(req, sessionId, 'state-update', { event: 'match-choice', matchId });
+    res.json({ session: getSessionState(sessionId, req.user.id), choice: result.choice });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
 
-    if (!t1Owner || !t2Owner) return res.status(400).json({ error: 'Both teams must be owned before choosing a side' });
-    if (t1Owner.userId !== t2Owner.userId) return res.status(400).json({ error: 'This match is already a normal contest' });
-    if (t1Owner.userId !== req.user.id) return res.status(403).json({ error: 'Only the team owner can choose a side' });
+// POST /api/game/process-match - apply the OFFICIAL result of a match to this session.
+// The winner is never taken from the request; it comes from getTrustedSchedule().
+router.post('/process-match', authMiddleware, requireSessionMember({ allowedStatuses: ['active'] }), allowFields(['sessionId', 'matchId']), async (req, res) => {
+  try {
+    const { sessionId, matchId } = req.body;
+    if (!isMatchId(matchId)) return res.status(400).json({ error: 'Invalid matchId' });
 
-    const opponent = state.players.find(p => p.id !== req.user.id);
-    if (!opponent) return res.status(400).json({ error: 'Opponent player not found' });
+    const effectiveSchedule = await getTrustedSchedule();
+    const match = effectiveSchedule.find(m => m.id === matchId);
+    if (!match) return res.status(404).json({ error: 'Match not found' });
 
-    db.prepare(`
-      INSERT INTO match_choices (session_id, match_id, chosen_team_id, chosen_user_id, opponent_user_id)
-      VALUES (?, ?, ?, ?, ?)
-      ON CONFLICT(session_id, match_id) DO UPDATE SET
-        chosen_team_id = excluded.chosen_team_id,
-        chosen_user_id = excluded.chosen_user_id,
-        opponent_user_id = excluded.opponent_user_id
-    `).run(sessionId, matchId, chosenTeamId, req.user.id, opponent.id);
+    const outcome = extractOutcome(match);
+    if (!outcome) return res.status(409).json({ error: 'No official result for this match yet' });
 
-    const newState = getSessionState(sessionId, req.user.id);
+    const result = applyMatchResultToSession({
+      sessionId,
+      match,
+      winnerTeamId: outcome.winnerTeamId,
+      isDraw: outcome.isDraw,
+      actorUserId: req.user.id,
+      strictChoice: true,
+    });
+
+    if (!result.ok) {
+      if (result.code === 'session-not-found') return res.status(404).json({ error: result.error });
+      if (result.code === 'already-processed' || result.code === 'not-active') return res.status(409).json({ error: result.error });
+      return res.status(400).json({ error: result.error });
+    }
+
+    announceAppliedResults(req, sessionId, [result]);
     res.json({
-      session: newState,
-      choice: {
-        matchId,
-        chosenTeamId,
-        chosenUserId: req.user.id,
-        opponentUserId: opponent.id,
-      },
+      session: getSessionState(sessionId, req.user.id),
+      message: outcome.isDraw ? 'Draw! Both players get 1 point.' : 'Match processed! Winner gets 2 points.',
     });
   } catch (err) {
     console.error(err);
@@ -761,31 +917,34 @@ router.post('/match-choice', authMiddleware, async (req, res) => {
   }
 });
 
-// POST /api/game/process-match - apply match result and award points
-router.post('/process-match', authMiddleware, async (req, res) => {
+// POST /api/game/admin/match-result - admin enters an official result when no trusted source has one.
+// Role is checked server-side from the DB (requireAdmin). Existing results cannot be overwritten.
+router.post('/admin/match-result', authMiddleware, requireAdmin, allowFields(['matchId', 'winnerTeamId', 'isDraw']), async (req, res) => {
   try {
-    const { sessionId, matchId, winnerTeamId, isDraw } = req.body;
+    const { matchId, winnerTeamId, isDraw } = req.body;
+    if (!isMatchId(matchId)) return res.status(400).json({ error: 'Invalid matchId' });
+    if (isDraw !== undefined && typeof isDraw !== 'boolean') return res.status(400).json({ error: 'isDraw must be a boolean' });
+    const draw = isDraw === true;
+    if (draw && winnerTeamId != null) return res.status(400).json({ error: 'A draw has no winner' });
 
-    const effectiveSchedule = await getEffectiveSchedule();
+    const effectiveSchedule = await getTrustedSchedule();
     const match = effectiveSchedule.find(m => m.id === matchId);
     if (!match) return res.status(404).json({ error: 'Match not found' });
-
-    const result = applyMatchResultToSession({
-      sessionId,
-      match,
-      winnerTeamId,
-      isDraw: !!isDraw,
-      actorUserId: req.user.id,
-      strictChoice: true,
-    });
-
-    if (!result.ok) {
-      if (result.code === 'session-not-found') return res.status(404).json({ error: result.error });
-      return res.status(400).json({ error: result.error });
+    if (!draw && winnerTeamId !== match.team1 && winnerTeamId !== match.team2) {
+      return res.status(400).json({ error: 'Winner must be one of the two teams in this match' });
     }
+    if (!match.date || match.date > todayUtc()) return res.status(409).json({ error: 'Match has not been played yet' });
+    if (extractOutcome(match)) return res.status(409).json({ error: 'An official result already exists for this match' });
 
-    const newState = getSessionState(sessionId, req.user.id);
-    res.json({ session: newState, message: isDraw ? 'Draw! Both players get 1 point.' : 'Match processed! Winner gets 2 points.' });
+    const inserted = db.prepare(`
+      INSERT INTO official_results (match_id, winner_team, is_draw, set_by) VALUES (?, ?, ?, ?)
+      ON CONFLICT(match_id) DO NOTHING
+    `).run(matchId, draw ? null : winnerTeamId, draw ? 1 : 0, req.user.id).changes;
+    if (!inserted) return res.status(409).json({ error: 'An official result already exists for this match' });
+
+    console.log(`[admin] ${req.user.username} set result for ${matchId}: ${draw ? 'draw' : winnerTeamId}`);
+    // Sessions apply it on their next /matches fetch (the Matches page polls every 5s).
+    res.json({ ok: true, matchId, result: draw ? { isDraw: true } : { winner: winnerTeamId } });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });
@@ -809,7 +968,7 @@ router.get('/ipl-data', (req, res) => {
 });
 
 // GET /api/game/live-status
-router.get('/live-status', authMiddleware, async (req, res) => {
+router.get('/live-status', authMiddleware, requireAdmin, async (req, res) => {
   try {
     await getEffectiveSchedule();
     const diagnostics = getLiveDiagnostics();
