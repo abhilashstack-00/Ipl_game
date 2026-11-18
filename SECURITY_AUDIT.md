@@ -46,6 +46,7 @@ Socket events are emitted only after the transaction function returns. Two uniqu
 ### Admin model (new, minimal)
 - `users.role` column (default `'player'`), added by migration.
 - Promote with `node setup.js --admin <username>`; revoke with `--revoke-admin`.
+- Or set the server env var `ADMIN_USERNAMES` (comma-separated, exact case). The server promotes listed users that already exist at startup, and gives `role = 'admin'` to a listed name when it registers. The list comes from the host's environment, never from a request. It only grants: removing a name does not demote. Tested: a listed name becomes admin, and a different-case lookalike stays a player.
 - `requireAdmin` reads the role from the DB on every request. A `role` claim in a validly signed JWT, or in a request body, has no effect (tested).
 - `POST /api/game/admin/match-result` records a global official result in a new `official_results` table. It accepts only past matches with no existing result and **cannot overwrite** one. Corrections require a deliberate DB edit.
 
@@ -54,7 +55,7 @@ Socket events are emitted only after the transaction function returns. Two uniqu
 ## 2. Remaining assumptions (not verifiable from this source)
 
 1. **Single process, single SQLite file.** Atomicity relies on better-sqlite3 transactions in one Node process. Running multiple backend instances would need a shared database with its own locking.
-2. **Data durability on Render free tier.** The filesystem is ephemeral, so the SQLite file, accounts, and admin roles can be wiped on redeploy or restart. This is an availability issue rather than a security one, but it means admin promotion must be redone after a wipe. A hosted database (Turso/libSQL, Neon, Supabase) fixes it.
+2. **Data durability on Render free tier.** The filesystem is ephemeral, so the SQLite file, accounts, and admin roles can be wiped on redeploy or restart. This is mostly an availability issue, and a hosted database (Turso/libSQL, Neon, Supabase) fixes it. It has one security side effect with `ADMIN_USERNAMES`: after a wipe, the listed username is free again, and **whoever registers it first becomes admin**. Mitigations until the DB is persistent: pick an admin username that isn't obvious and isn't your normal player name, and register it right after every deploy or restart. If registering it says "Username already taken", someone else got it first: remove the name from `ADMIN_USERNAMES`, change to a new one, and redeploy. An admin can only add results for past matches that have none; it cannot overwrite existing ones.
 3. **The result sources are trusted as-is.**
    - Seeded results in `db/iplData.js` (m01–m04) are hardcoded and were not checked against reality.
    - CricAPI is trusted over TLS. If its feed is wrong, wrong points are awarded.

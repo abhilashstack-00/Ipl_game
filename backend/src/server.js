@@ -13,6 +13,10 @@ const server = http.createServer(app);
 
 const db = require('./db/database');
 const { verifyTokenAndLoadUser } = require('./middleware/auth');
+const { promoteConfiguredAdmins } = require('./services/adminBootstrap');
+
+// Re-apply admins listed in ADMIN_USERNAMES (needed on hosts where the DB can be wiped).
+promoteConfiguredAdmins(db);
 
 const DEFAULT_ORIGINS = [
   'https://abhilashstack-00.github.io',

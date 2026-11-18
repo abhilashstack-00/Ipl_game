@@ -213,6 +213,24 @@ async function register(name) {
     record('[functional] Official result is applied to the session', row.processed && row.result.winner === m9.team2, `processed=${row.processed} winner=${row.result?.winner}`);
   }
 
+  // --- ADMIN_USERNAMES env var ----------------------------------------------
+  // Start the server AND this harness with the same ADMIN_USERNAMES (fresh DB: the name is fixed).
+  const envAdmin = (process.env.ADMIN_USERNAMES || '').split(',')[0].trim();
+  if (envAdmin) {
+    const EA = await register(envAdmin);
+    const me = await call('GET', '/auth/me', EA.token);
+    r = await call('GET', '/game/live-status', EA.token);
+    record('[functional] ADMIN_USERNAMES account is admin after register', me.data?.user?.role === 'admin' && r.status !== 403,
+      `role=${me.data?.user?.role} live-status HTTP ${r.status}`);
+
+    const swapped = [...envAdmin].map((ch) => (ch === ch.toLowerCase() ? ch.toUpperCase() : ch.toLowerCase())).join('');
+    if (swapped !== envAdmin) {
+      const lookalike = await register(swapped);
+      r = await call('GET', '/game/live-status', lookalike.token);
+      record('Different-case lookalike of an ADMIN_USERNAMES name', r.status === 403, `HTTP ${r.status} ${r.data?.error || ''}`);
+    }
+  }
+
   // Outsider room membership, evaluated last so it covers every broadcast above.
   record('Outsider receives events from a room it is not in', outsiderEvents.length === 0,
     outsiderEvents.length ? `received: ${[...new Set(outsiderEvents)].join(', ')}` : 'received nothing');

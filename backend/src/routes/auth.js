@@ -3,6 +3,7 @@ const bcrypt = require('bcryptjs');
 const { v4: uuidv4 } = require('uuid');
 const db = require('../db/database');
 const { signToken } = require('../middleware/auth');
+const { isConfiguredAdmin } = require('../services/adminBootstrap');
 
 const router = express.Router();
 
@@ -29,10 +30,12 @@ router.post('/register', async (req, res) => {
 
     const hash = await bcrypt.hash(password, 10);
     const id = uuidv4();
+    // The role comes from the server's ADMIN_USERNAMES env var, never from the request.
+    const role = isConfiguredAdmin(username) ? 'admin' : 'player';
     db.prepare(`
-      INSERT INTO users (id, username, password_hash, credits, points, wins, losses, draws, matches_played)
-      VALUES (?, ?, ?, 100, 0, 0, 0, 0, 0)
-    `).run(id, username, hash);
+      INSERT INTO users (id, username, password_hash, role, credits, points, wins, losses, draws, matches_played)
+      VALUES (?, ?, ?, ?, 100, 0, 0, 0, 0, 0)
+    `).run(id, username, hash, role);
 
     const user = db.prepare('SELECT id, username, role, credits, points, wins, losses, draws, matches_played FROM users WHERE id = ?').get(id);
     const token = signToken({ id: user.id, username: user.username });
