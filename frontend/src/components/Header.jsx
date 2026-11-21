@@ -45,13 +45,14 @@ export default function Header() {
         boxShadow: '0 4px 30px rgba(255,215,0,0.1)',
       }}
     >
-      <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between gap-4">
+      {/* flex-wrap: on narrow phones the buttons drop to a second row instead of widening the page */}
+      <div className="max-w-7xl mx-auto px-4 py-3 flex flex-wrap items-center justify-between gap-2 sm:gap-4">
         {/* Logo */}
         <Link to={user ? '/lobby' : '/login'} className="flex-shrink-0">
           <div className="font-teko text-2xl font-bold tracking-widest">
             <span className="text-yellow-400">IPL </span>
             <span className="text-orange-400">STRATEGY </span>
-            <span className="text-gray-400 text-base">ARENA</span>
+            <span className="text-gray-400 text-base hidden sm:inline">ARENA</span>
           </div>
         </Link>
 
@@ -76,7 +77,20 @@ export default function Header() {
 
         {/* User info */}
         {user && (
-          <div className="flex items-center gap-3 flex-shrink-0">
+          <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0 ml-auto">
+            {user.role === 'admin' && (
+              <Link
+                to="/admin"
+                aria-label="Open the admin page"
+                className={`py-1.5 px-2 sm:px-3 rounded-full text-xs font-bold uppercase tracking-wider transition-all ${
+                  location.pathname === '/admin'
+                    ? 'bg-yellow-400 text-ipl-deep-blue'
+                    : 'text-yellow-400 border border-yellow-400/40 hover:bg-yellow-400/10'
+                }`}
+              >
+                <span aria-hidden="true">🛡️</span><span className="hidden sm:inline ml-1">Admin</span>
+              </Link>
+            )}
             {canLeaveGame && (
               <button
                 onClick={handleLeaveGame}

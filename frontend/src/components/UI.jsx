@@ -1,4 +1,5 @@
 import React from 'react'
+import { createPortal } from 'react-dom'
 import { getTeam } from '../utils/iplData'
 
 export function TeamBadge({ teamId, size = 'md' }) {
@@ -110,22 +111,29 @@ export function Alert({ type = 'info', children }) {
   )
 }
 
+// Rendered into document.body through a portal. Pages use `.animate-fade-in`, which leaves a
+// `transform` on the page wrapper; a `position: fixed` element inside a transformed parent is
+// positioned against that parent instead of the window, so the dialog could end up off-screen.
 export function Modal({ open, onClose, title, children, width = 'max-w-lg' }) {
   if (!open) return null
-  return (
+  return createPortal(
     <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4" onClick={onClose}>
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={typeof title === 'string' ? title : undefined}
         className={`bg-ipl-mid-blue border border-yellow-400/60 rounded-2xl p-6 w-full ${width} shadow-2xl animate-fade-in`}
         style={{ boxShadow: '0 0 40px rgba(255,215,0,0.12)' }}
         onClick={e => e.stopPropagation()}
       >
         <div className="flex items-center justify-between mb-5">
           <h3 className="font-teko text-yellow-400 text-2xl uppercase tracking-wider">{title}</h3>
-          <button onClick={onClose} className="text-gray-400 hover:text-white text-2xl leading-none">&times;</button>
+          <button onClick={onClose} aria-label="Close" className="text-gray-400 hover:text-white text-2xl leading-none">&times;</button>
         </div>
         {children}
       </div>
-    </div>
+    </div>,
+    document.body
   )
 }
 

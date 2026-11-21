@@ -14,11 +14,13 @@ export default function LoginPage() {
     setError('')
     setLoading(true)
     try {
-      await login(form.username, form.password)
+      const loggedIn = await login(form.username, form.password)
+      // Admins land on the admin page; they don't need to be in a game.
+      const dest = loggedIn?.role === 'admin' ? '/admin' : '/lobby'
       if (window.location.hostname.endsWith('github.io')) {
-        window.location.replace(`${window.location.origin}/Ipl_game/#/lobby`)
+        window.location.replace(`${window.location.origin}/Ipl_game/#${dest}`)
       } else {
-        navigate('/lobby')
+        navigate(dest)
       }
     } catch (err) {
       setError(err.response?.data?.error || 'Login failed')

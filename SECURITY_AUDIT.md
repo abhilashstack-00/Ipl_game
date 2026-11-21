@@ -49,6 +49,7 @@ Socket events are emitted only after the transaction function returns. Two uniqu
 - Or set the server env var `ADMIN_USERNAMES` (comma-separated, exact case). The server promotes listed users that already exist at startup, and gives `role = 'admin'` to a listed name when it registers. The list comes from the host's environment, never from a request. It only grants: removing a name does not demote. Tested: a listed name becomes admin, and a different-case lookalike stays a player.
 - `requireAdmin` reads the role from the DB on every request. A `role` claim in a validly signed JWT, or in a request body, has no effect (tested).
 - `POST /api/game/admin/match-result` records a global official result in a new `official_results` table. It accepts only past matches with no existing result and **cannot overwrite** one. Corrections require a deliberate DB edit.
+- `GET /api/game/admin/matches` (admin only, read-only) lists every match as `needs-result`, `decided` (with its source: schedule, live feed or admin, and who entered it) or `upcoming`, plus live-feed diagnostics. It needs no session, so the admin page at `#/admin` works for an admin who is not playing. Tested: a player gets 403, and an admin in no game gets the list.
 
 ---
 

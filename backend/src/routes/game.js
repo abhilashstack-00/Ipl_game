@@ -917,6 +917,49 @@ router.post('/process-match', authMiddleware, requireSessionMember({ allowedStat
   }
 });
 
+// GET /api/game/admin/matches - read-only overview for the admin page. No session needed:
+// official results are global, so the admin does not have to be playing a game.
+router.get('/admin/matches', authMiddleware, requireAdmin, async (req, res) => {
+  try {
+    const today = todayUtc();
+    const trusted = await getTrustedSchedule();
+    const entered = new Map(db.prepare(`
+      SELECT o.match_id, o.set_at, u.username AS set_by_name
+      FROM official_results o LEFT JOIN users u ON u.id = o.set_by
+    `).all().map(r => [r.match_id, r]));
+
+    const matches = trusted.map((m) => {
+      const outcome = extractOutcome(m);
+      let source = null;
+      if (outcome) {
+        if (m.result?.method === 'admin') source = 'admin';
+        else if (m.result) source = 'schedule';
+        else source = 'live-feed';
+      }
+      const status = outcome ? 'decided' : (m.date && m.date <= today ? 'needs-result' : 'upcoming');
+      const adminEntry = source === 'admin' ? entered.get(m.id) : null;
+      return {
+        id: m.id,
+        team1: m.team1,
+        team2: m.team2,
+        date: m.date,
+        venue: m.venue,
+        status,
+        outcome,
+        source,
+        liveStatus: m.liveStatus || null,
+        enteredBy: adminEntry?.set_by_name || null,
+        enteredAt: adminEntry?.set_at || null,
+      };
+    });
+
+    res.json({ today, matches, live: getLiveDiagnostics() });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // POST /api/game/admin/match-result - admin enters an official result when no trusted source has one.
 // Role is checked server-side from the DB (requireAdmin). Existing results cannot be overwritten.
 router.post('/admin/match-result', authMiddleware, requireAdmin, allowFields(['matchId', 'winnerTeamId', 'isDraw']), async (req, res) => {

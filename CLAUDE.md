@@ -32,6 +32,8 @@ Vite proxies `/api` and `/socket.io` to `localhost:3002`.
 - `backend/src/db/database.js`: schema and in-place migrations (`ALTER TABLE` guarded by `PRAGMA table_info`)
 - `backend/src/db/iplData.js`: teams and the static IPL 2026 schedule
 - `frontend/src/context/GameContext.jsx`: API calls and socket listeners
+- `frontend/src/pages/AdminPage.jsx` (`#/admin`): enter official results without being in a game. Backed by `GET /api/game/admin/matches`.
+- `frontend/src/components/UI.jsx`: shared UI. `Modal` renders through a portal because `.animate-fade-in` leaves a `transform` that breaks `position: fixed`.
 - `SECURITY_AUDIT.md`: findings, fixes and the remaining assumptions
 
 ## Security rules (do not regress)
@@ -45,8 +47,8 @@ These were added after an audit. Several were exploitable before. Keep them true
 7. `ALLOW_TEST_HELPER` must stay false in production.
 
 ## Testing
-`security-tests/attack.js` runs about 31 attack and functional checks against a local server. See `security-tests/README.md`. Run it after any backend change; every line should say `SECURE`.
-Use a throwaway database: `rm -rf backend/data` first, and start the server with `PORT=3101 ALLOW_TEST_HELPER=true`. Pass the same `ADMIN_USERNAMES` to the server and the harness to include the two admin-bootstrap checks.
+`security-tests/attack.js` runs about 34 attack and functional checks against a local server. See `security-tests/README.md`. Run it after any backend change; every line should say `SECURE`.
+Use a throwaway database: `rm -rf backend/data` first, and start the server with `PORT=3101 ALLOW_TEST_HELPER=true`. Pass the same `ADMIN_USERNAMES` to the server and the harness to include the admin-bootstrap checks.
 No unit test framework yet. Adding one (e.g. `node:test` + supertest) is welcome.
 
 ## Deploy
@@ -54,14 +56,15 @@ No unit test framework yet. Adding one (e.g. `node:test` + supertest) is welcome
 - **Frontend:** `frontend/.env.production` needs `VITE_API_URL` and `VITE_SOCKET_URL` set to the Render URL. GitHub Pages currently serves the **built** `index.html` + `assets/` from the repo root on `main`. After a frontend change, rebuild and replace the root `assets/` and `index.html`, or move to a GitHub Actions deploy.
 - Deploy backend and frontend together. The old frontend sends winners, which the new backend rejects.
 
-## Status (as of 18 Nov 2026)
-- The security upgrade in this folder is **NOT yet pushed** to GitHub or deployed. GitHub `main` is still at `e79070d` (24 Apr 2026). The live site still has the old holes.
+## Status (as of 21 Nov 2026)
+- The security upgrade is **live** (pushed 21 Nov 2026 as `619e531`). Render runs it with `JWT_SECRET`, `ADMIN_USERNAMES`, `FRONTEND_URLS` and `ALLOW_TEST_HELPER=false`; GitHub Pages serves the rebuilt frontend.
+- The admin page (`#/admin`) was added afterwards. The owner registers their admin account after every Render restart (the DB is wiped).
 - Next steps, in order:
-  1. Commit, push, deploy the backend with `JWT_SECRET` and `ADMIN_USERNAMES`, deploy the frontend (the root `index.html` + `assets/` were rebuilt for the new backend on 18 Nov 2026), then register the owner's admin account right away.
-  2. **Stop data loss:** Render's free-tier disk is ephemeral, so the SQLite file (accounts, games, admin roles) is wiped on restart or redeploy. Move to a hosted DB. Turso/libSQL is closest to SQLite; Supabase or Neon are Postgres options.
-  3. **Gameplay fixes:** points/wins live on `users` globally instead of per session. The home-team "bidding war" path is unreachable: the first pick is assigned immediately. Either player leaving ends the session for both.
-  4. **UX:** a "waking up the server" screen for Render cold starts (30-60 s). Remove the dev instructions from the fallback text in root `index.html`. Accessibility: there are zero aria/alt attributes.
-  5. Rate limiting on login and register.
+  1. **Stop data loss:** Render's free-tier disk is ephemeral, so the SQLite file (accounts, games, admin roles) is wiped on restart or redeploy. Move to a hosted DB. Turso/libSQL is closest to SQLite; Supabase or Neon are Postgres options.
+  2. **Gameplay fixes:** points/wins live on `users` globally instead of per session (admin accounts also show on the leaderboard). The home-team "bidding war" path is unreachable: the first pick is assigned immediately. Either player leaving ends the session for both.
+  3. **UX:** a "waking up the server" screen for Render cold starts (30-60 s). Remove the dev instructions from the fallback text in root `index.html`. Accessibility: only the admin page, header admin link and `Modal` have aria attributes so far.
+  4. Rate limiting on login and register.
+  5. `npm audit` lists advisories in backend dependencies (express/body-parser, qs, socket.io/ws). Most are fixed by a non-breaking `npm audit fix`; rerun the security tests after.
 
 ## Conventions
 - Keep diffs focused. Don't rewrite unrelated code or add dependencies without a reason.

@@ -17,11 +17,13 @@ export default function RegisterPage() {
     if (form.password.length < 8) { setError('Password must be at least 8 characters'); return }
     setLoading(true)
     try {
-      await register(form.username, form.password)
+      const registered = await register(form.username, form.password)
+      // An ADMIN_USERNAMES account is admin from the start, so send it straight to the admin page.
+      const dest = registered?.role === 'admin' ? '/admin' : '/lobby'
       if (window.location.hostname.endsWith('github.io')) {
-        window.location.replace(`${window.location.origin}/Ipl_game/#/lobby`)
+        window.location.replace(`${window.location.origin}/Ipl_game/#${dest}`)
       } else {
-        navigate('/lobby')
+        navigate(dest)
       }
     } catch (err) {
       setError(err.response?.data?.error || 'Registration failed')

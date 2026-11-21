@@ -180,6 +180,9 @@ async function register(name) {
   const daveRole = r.data?.user?.role;
   record('Register with role=admin in body', r.status === 400 || daveRole !== 'admin', `HTTP ${r.status} role=${daveRole}`);
 
+  r = await call('GET', '/game/admin/matches', C.token);
+  record('Player reads the admin match overview', r.status === 403, `HTTP ${r.status} ${r.data?.error || ''}`);
+
   // --- Legit flows still work (functional regression) ----------------------
   const D = await register(`dina_${tag}`);
   const E = await register(`eli_${tag}`);
@@ -211,6 +214,10 @@ async function register(name) {
     const applied = await call('GET', `/game/matches/${sid}`, B.token);
     const row = applied.data.matches.find((m) => m.id === m9.id);
     record('[functional] Official result is applied to the session', row.processed && row.result.winner === m9.team2, `processed=${row.processed} winner=${row.result?.winner}`);
+    r = await call('GET', '/game/admin/matches', A.token);
+    const ov = r.data?.matches?.find((m) => m.id === m9.id);
+    record('[functional] Admin overview shows the admin result', r.status === 200 && ov?.status === 'decided' && ov?.source === 'admin' && ov?.enteredBy === A.user.username,
+      `HTTP ${r.status} status=${ov?.status} source=${ov?.source}`);
   }
 
   // --- ADMIN_USERNAMES env var ----------------------------------------------
@@ -222,6 +229,10 @@ async function register(name) {
     r = await call('GET', '/game/live-status', EA.token);
     record('[functional] ADMIN_USERNAMES account is admin after register', me.data?.user?.role === 'admin' && r.status !== 403,
       `role=${me.data?.user?.role} live-status HTTP ${r.status}`);
+    r = await call('GET', '/game/admin/matches', EA.token);
+    const needs = (r.data?.matches || []).filter((m) => m.status === 'needs-result').length;
+    record('[functional] Admin who is in no game reads the match overview', r.status === 200 && Array.isArray(r.data?.matches),
+      `HTTP ${r.status} matches=${r.data?.matches?.length} needs-result=${needs}`);
 
     const swapped = [...envAdmin].map((ch) => (ch === ch.toLowerCase() ? ch.toUpperCase() : ch.toLowerCase())).join('');
     if (swapped !== envAdmin) {

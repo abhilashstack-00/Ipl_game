@@ -13,6 +13,7 @@ import DashboardPage from './pages/DashboardPage'
 import MatchesPage from './pages/MatchesPage'
 import LeaderboardPage from './pages/LeaderboardPage'
 import SquadsPage from './pages/SquadsPage'
+import AdminPage from './pages/AdminPage'
 
 function ProtectedRoute({ children }) {
   const { user, loading } = useAuth()
@@ -43,6 +44,7 @@ function AppContent() {
           <Route path="/game/matches" element={<ProtectedRoute><MatchesPage /></ProtectedRoute>} />
           <Route path="/game/leaderboard" element={<ProtectedRoute><LeaderboardPage /></ProtectedRoute>} />
           <Route path="/game/squads" element={<ProtectedRoute><SquadsPage /></ProtectedRoute>} />
+          <Route path="/admin" element={<ProtectedRoute><AdminPage /></ProtectedRoute>} />
           <Route path="/" element={<Navigate to="/lobby" replace />} />
           <Route path="*" element={<Navigate to="/lobby" replace />} />
         </Routes>
