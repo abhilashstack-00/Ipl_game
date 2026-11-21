@@ -140,6 +140,12 @@ function init() {
 
   db.prepare('UPDATE session_players SET credits = 100 WHERE credits IS NULL').run();
 
+  // Teams handed out at base price when the other squad filled up first (see concludeAuctionIfSquadFull).
+  const ownershipCols = db.prepare('PRAGMA table_info(team_ownerships)').all();
+  if (!ownershipCols.some(c => c.name === 'auto_assigned')) {
+    db.exec('ALTER TABLE team_ownerships ADD COLUMN auto_assigned INTEGER NOT NULL DEFAULT 0');
+  }
+
   // Server-side roles. Never set from client input; promote with `node setup.js --admin <username>`.
   const userCols = db.prepare('PRAGMA table_info(users)').all();
   if (!userCols.some(c => c.name === 'role')) {

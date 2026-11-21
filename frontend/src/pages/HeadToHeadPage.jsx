@@ -85,7 +85,7 @@ export default function HeadToHeadPage() {
                       {getTeam(t.teamId).name}
                       {t.isHome && <Home size={13} className="text-muted flex-shrink-0" aria-label="Home team" />}
                     </div>
-                    <div className="eyebrow">{t.pricePaid ? `${t.pricePaid} credits` : 'Free'}</div>
+                    <div className="eyebrow">{t.pricePaid ? `${t.pricePaid} credits` : 'Free'}{t.autoAssigned ? ' · base price' : ''}</div>
                   </div>
                   <div className="text-right">
                     <div className="score text-lg">{teamRecord(t.teamId)}</div>

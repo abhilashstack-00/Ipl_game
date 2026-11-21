@@ -2,7 +2,7 @@ import React from 'react'
 import { Wordmark, ThemeToggle } from './Header'
 
 const RULES = [
-  ['Auction', 'Both managers get 100 credits and bid on the ten IPL teams. Up to five teams each.'],
+  ['Auction', 'Both managers get 100 credits and bid on the ten IPL teams. Five teams each; once one squad is full, the rest go to the other at base price.'],
   ['Home team', 'Each manager picks one team for free before the bidding starts.'],
   ['Score', 'When two of your teams meet theirs: win 2 points, no result 1 point each, loss 0.'],
 ]

@@ -60,7 +60,13 @@ export default function AuctionPage() {
     }
 
     if (previousAuction.status !== 'completed' && currentAuction.status === 'completed') {
-      addNotification('Auction complete. Start the season when you are ready.', 'success')
+      const receiver = session.players.find(p => p.teams?.some(t => t.autoAssigned))
+      if (receiver) {
+        const n = receiver.teams.filter(t => t.autoAssigned).length
+        addNotification(`A squad is full, so the last ${n} team${n === 1 ? '' : 's'} went to ${receiver.id === user?.id ? 'you' : receiver.username} at base price`, 'info')
+      } else {
+        addNotification('Auction complete. Start the season when you are ready.', 'success')
+      }
     }
 
     prevAuctionRef.current = { activeTeamId: currentAuction.activeTeamId, status: currentAuction.status }
@@ -86,6 +92,10 @@ export default function AuctionPage() {
   const bothPlayersReady = session.players?.length === 2
   const auctionComplete = auction?.status === 'completed' || (myPlayer?.teams?.length >= MAX_TEAMS && (opponent?.teams?.length >= MAX_TEAMS))
   const isRunning = !pendingBid && auction?.status === 'running' && !!activeTeamId
+  // Set when one squad filled up first and the server handed the rest out at base price.
+  const autoReceiver = session.players?.find(p => p.teams?.some(t => t.autoAssigned))
+  const autoTeams = autoReceiver?.teams?.filter(t => t.autoAssigned) || []
+  const fullPlayer = autoReceiver && session.players?.find(p => p.id !== autoReceiver.id)
 
   const title = !bothPlayersReady ? 'Waiting for your opponent'
     : auctionComplete ? 'Auction complete'
@@ -164,12 +174,26 @@ export default function AuctionPage() {
       >
         {!bothPlayersReady
           ? 'Send your opponent the code below. The auction starts when they join.'
+          : auctionComplete
+            ? 'Bidding is over. Either of you can start the season.'
           : !myPlayer?.homeTeam
             ? 'Pick one team for free before the bidding starts. If you both pick the same team, you bid for it.'
             : `Teams come up one at a time for ${roundSeconds} seconds. Both of you bid in secret; the highest bid wins.`}
       </PageHeader>
 
       {!bothPlayersReady && <div className="max-w-md mb-8"><InviteCodeBox code={session.session.inviteCode} /></div>}
+
+      {autoTeams.length > 0 && (
+        <Alert type="info" className="mb-8">
+          <div className="font-medium">
+            {fullPlayer?.id === user?.id ? 'Your' : `${fullPlayer?.username}'s`} squad filled up first, so bidding ended early.
+          </div>
+          <p className="text-ink-2 mt-1">
+            The remaining {autoTeams.length === 1 ? 'team went' : `${autoTeams.length} teams went`} to {autoReceiver.id === user?.id ? 'you' : autoReceiver.username} at base price:{' '}
+            {autoTeams.map(t => `${getTeam(t.teamId).short} (${t.pricePaid})`).join(', ')}.
+          </p>
+        </Alert>
+      )}
 
       {/* On the block */}
       {pendingBid && (

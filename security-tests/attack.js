@@ -205,6 +205,47 @@ async function register(name) {
   r = await call('POST', '/game/bid', D.token, { sessionId: dsid, teamId: active, amount: 5, userId: E.user.id });
   record('Forged userId in HTTP body', r.status === 400, `HTTP ${r.status} ${r.data?.error || ''}`);
 
+  // --- Auction ends early when one squad is full ----------------------------
+  // Needs short rounds: start the server with TEST_ROUND_SECONDS=2 (only honoured with ALLOW_TEST_HELPER=true).
+  const roundSeconds = st.data.session.auction?.roundSeconds;
+  if (roundSeconds && roundSeconds <= 3) {
+    const F = await register(`fay_${tag}`);
+    const G = await register(`gus_${tag}`);
+    const fs = await call('POST', '/game/session', F.token);
+    const fsid = fs.data.session.session.id;
+    await call('POST', '/game/session/join', G.token, { inviteCode: fs.data.session.session.inviteCode });
+    await call('POST', '/game/home-team', F.token, { sessionId: fsid, teamId: 'csk' });
+    await call('POST', '/game/home-team', G.token, { sessionId: fsid, teamId: 'mi' });
+    const bases = Object.fromEntries((await call('GET', '/game/ipl-data')).data.teams.map((t) => [t.id, t.basePrice]));
+
+    // G spends 90 on the first lot, then F wins the next four lots for 1 credit each and fills up.
+    let state = (await call('GET', '/game/session', F.token)).data.session;
+    for (let round = 0; round < 5 && state.auction?.status === 'running'; round += 1) {
+      const lot = state.auction.activeTeamId;
+      if (round === 0) await call('POST', '/game/bid', G.token, { sessionId: fsid, teamId: lot, amount: 90 });
+      else await call('POST', '/game/bid', F.token, { sessionId: fsid, teamId: lot, amount: 1 });
+      await sleep((roundSeconds + 1) * 1000);
+      state = (await call('GET', '/game/session', F.token)).data.session;
+    }
+    const fp = state.players.find((p) => p.id === F.user.id);
+    const gp = state.players.find((p) => p.id === G.user.id);
+    const auto = gp.teams.filter((t) => t.autoAssigned);
+    const charged = auto.reduce((s, t) => s + t.pricePaid, 0);
+    const baseTotal = auto.reduce((s, t) => s + bases[t.teamId], 0);
+    record('[functional] Full squad ends the auction; rest go to the other player',
+      state.auction?.status === 'completed' && fp.teams.length === 5 && gp.teams.length === 5 && auto.length === 3,
+      `status=${state.auction?.status} F=${fp.teams.length} G=${gp.teams.length} auto=${auto.map((t) => t.teamId).join(',')}`);
+    record('[functional] Auto-assigned teams cost base price, never below 0 credits',
+      gp.credits === 0 && charged === 10 && baseTotal > 10 && auto.every((t) => t.pricePaid <= bases[t.teamId]),
+      `G credits=${gp.credits} charged=${charged} of base ${baseTotal}`);
+    r = await call('POST', '/game/bid', F.token, { sessionId: fsid, teamId: auto[0]?.teamId || 'lsg', amount: 1 });
+    record('Bid after the auction ended early', r.status === 409 || r.status === 400, `HTTP ${r.status} ${r.data?.error || ''}`);
+    r = await call('POST', '/game/finalize-auction', G.token, { sessionId: fsid });
+    record('[functional] Season starts after an early finish', r.status === 200, `HTTP ${r.status} ${r.data?.error || ''}`);
+  } else {
+    console.log('(skipped early-finish auction checks: start the server with TEST_ROUND_SECONDS=2)');
+  }
+
   // --- Admin positive path --------------------------------------------------
   if (process.env.SETUP_JS) {
     require('child_process').execFileSync('node', [process.env.SETUP_JS, '--admin', A.user.username], { stdio: 'ignore' });

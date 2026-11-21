@@ -9,8 +9,10 @@ const { getEffectiveSchedule, getLiveDiagnostics } = require('../services/liveSc
 const router = express.Router();
 const MAX_TEAMS = 5;
 const STARTING_CREDITS = 100;
-const AUCTION_ROUND_SECONDS = 20;
 const ALLOW_TEST_HELPER = (process.env.ALLOW_TEST_HELPER || '').trim().toLowerCase() === 'true';
+// Rounds last 20 s. Tests may shorten them with TEST_ROUND_SECONDS, but only when the test helper is on.
+const TEST_ROUND_SECONDS = Number.parseInt(process.env.TEST_ROUND_SECONDS || '', 10);
+const AUCTION_ROUND_SECONDS = ALLOW_TEST_HELPER && TEST_ROUND_SECONDS >= 1 && TEST_ROUND_SECONDS <= 20 ? TEST_ROUND_SECONDS : 20;
 
 // ---------------------------------------------------------------------------
 // Input validation helpers. Every client value is untrusted.
@@ -172,6 +174,42 @@ function startAuctionIfReady(sessionId) {
   });
 }
 
+// Once one player has a full squad, there is nothing left to bid for: every unsold team goes to
+// the other player at its base price. Ten teams minus a full squad of five always leaves exactly
+// enough teams to fill the other squad (teams skipped earlier with no bids are included).
+// Credits never go below zero: a team the player can't fully afford costs whatever they have left.
+// Must run inside the auction transaction. Returns the assigned teams, or null if nothing changed.
+function concludeAuctionIfSquadFull(sessionId) {
+  const players = db.prepare('SELECT user_id, credits FROM session_players WHERE session_id = ?').all(sessionId);
+  if (players.length < 2) return null;
+  if (!players.some(p => teamCount(sessionId, p.user_id) >= MAX_TEAMS)) return null;
+  const other = players.find(p => teamCount(sessionId, p.user_id) < MAX_TEAMS);
+  if (!other) return null;
+
+  const owned = new Set(db.prepare('SELECT team_id FROM team_ownerships WHERE session_id = ?').all(sessionId).map(r => r.team_id));
+  const openSlots = MAX_TEAMS - teamCount(sessionId, other.user_id);
+  const remaining = IPL_TEAMS.filter(t => !owned.has(t.id)).slice(0, openSlots);
+
+  let credits = other.credits ?? STARTING_CREDITS;
+  const assigned = [];
+  for (const team of remaining) {
+    const price = Math.min(team.basePrice, Math.max(0, credits));
+    credits -= price;
+    db.prepare('INSERT INTO team_ownerships (id, session_id, user_id, team_id, price_paid, is_home_team, auto_assigned) VALUES (?, ?, ?, ?, ?, 0, 1)')
+      .run(uuidv4(), sessionId, other.user_id, team.id, price);
+    assigned.push({ teamId: team.id, price });
+  }
+  db.prepare('UPDATE session_players SET credits = ? WHERE session_id = ? AND user_id = ?').run(credits, sessionId, other.user_id);
+  db.prepare('DELETE FROM bids WHERE session_id = ?').run(sessionId);
+  upsertAuctionState(sessionId, {
+    currentTeamIndex: IPL_TEAMS.length,
+    activeTeamId: null,
+    roundEndsAt: null,
+    status: 'completed',
+  });
+  return { userId: other.user_id, assigned };
+}
+
 function resolveActiveAuctionRound(sessionId) {
   const state = getAuctionState(sessionId);
   if (!state || state.status !== 'running' || !state.active_team_id) return null;
@@ -196,6 +234,11 @@ function resolveActiveAuctionRound(sessionId) {
   }
 
   db.prepare('DELETE FROM bids WHERE session_id = ? AND team_id = ?').run(sessionId, teamId);
+
+  const concluded = concludeAuctionIfSquadFull(sessionId);
+  if (concluded) {
+    return { teamId, winnerUserId: winnerBid?.user_id || null, amount: winnerBid?.amount || null, concluded };
+  }
 
   const nextTeam = getNextAuctionTeam(sessionId, state.current_team_index + 1);
   if (!nextTeam) {
@@ -256,7 +299,7 @@ function getSessionState(sessionId, userId) {
 
   const playersWithTeams = players.map(p => ({
     ...(() => {
-      const playerTeams = ownerships.filter(o => o.user_id === p.id).map(o => ({ teamId: o.team_id, pricePaid: o.price_paid, isHome: !!o.is_home_team }));
+      const playerTeams = ownerships.filter(o => o.user_id === p.id).map(o => ({ teamId: o.team_id, pricePaid: o.price_paid, isHome: !!o.is_home_team, autoAssigned: !!o.auto_assigned }));
       const ownedHomeTeam = playerTeams.find(t => t.isHome)?.teamId || null;
       return {
         teams: playerTeams,

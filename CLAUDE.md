@@ -50,8 +50,12 @@ These were added after an audit. Several were exploitable before. Keep them true
 7. `ALLOW_TEST_HELPER` must stay false in production.
 
 ## Testing
-`security-tests/attack.js` runs about 35 attack and functional checks against a local server. See `security-tests/README.md`. Run it after any backend change; every line should say `SECURE`.
-Use a throwaway database: `rm -rf backend/data` first, and start the server with `PORT=3101 ALLOW_TEST_HELPER=true`. Pass the same `ADMIN_USERNAMES` to the server and the harness to include the admin-bootstrap checks.
+`security-tests/attack.js` runs about 39 attack and functional checks against a local server. See `security-tests/README.md`. Run it after any backend change; every line should say `SECURE`.
+Use a throwaway database: `rm -rf backend/data` first, and start the server with `PORT=3101 ALLOW_TEST_HELPER=true TEST_ROUND_SECONDS=2`. Pass the same `ADMIN_USERNAMES` to the server and the harness to include the admin-bootstrap checks. `TEST_ROUND_SECONDS` (1-20) shortens auction rounds and is ignored unless `ALLOW_TEST_HELPER=true`.
+
+## Auction rules (server-side, `routes/game.js`)
+- Each player picks one free home team, then the other teams are auctioned once each, in `IPL_TEAMS` order, 20 s per round. Highest valid bid wins; a team with no bids is skipped.
+- `concludeAuctionIfSquadFull`: as soon as one player has 5 teams, every unsold team (including skipped ones) goes to the other player at base price, credits floored at 0, marked `team_ownerships.auto_assigned = 1`, and the auction is `completed`. 10 teams minus 5 always equals the other player's open slots.
 No unit test framework yet. Adding one (e.g. `node:test` + supertest) is welcome.
 
 ## Deploy
