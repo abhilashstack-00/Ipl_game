@@ -64,7 +64,7 @@ No unit test framework yet. Adding one (e.g. `node:test` + supertest) is welcome
 - Deploy backend and frontend together. The old frontend sends winners, which the new backend rejects.
 
 ## Status (as of 21 Nov 2026)
-- The security upgrade is **live** (pushed 21 Nov 2026 as `619e531`). Render runs it with `JWT_SECRET`, `ADMIN_USERNAMES`, `FRONTEND_URLS` and `ALLOW_TEST_HELPER=false`; GitHub Pages serves the rebuilt frontend.
+- The security upgrade is **live** (pushed 21 Nov 2026; history was rewritten that day to drop AI co-author lines, so older hashes no longer exist). Render runs it with `JWT_SECRET`, `ADMIN_USERNAMES`, `FRONTEND_URLS` and `ALLOW_TEST_HELPER=false`; GitHub Pages serves the rebuilt frontend.
 - The admin page (`#/admin`) was added afterwards. The owner registers their admin account after every Render restart (the DB is wiped).
 - Redesign (21 Nov 2026): light and dark themes, new layout for every page, "pick your side" UI, server wake-up screen. Removed: the global leaderboard page and `GET /api/game/leaderboard` (it listed every account), the old Squads page (merged into Head-to-head), admin buttons and "Apply result" on the fixtures page.
 - The static schedule in `iplData.js` only covers 30 matches up to 20 Apr 2026; later fixtures come only from the live feed.
@@ -76,6 +76,7 @@ No unit test framework yet. Adding one (e.g. `node:test` + supertest) is welcome
   5. `npm audit` lists advisories in backend dependencies (express/body-parser, qs, socket.io/ws). Most are fixed by a non-breaking `npm audit fix`; rerun the security tests after.
 
 ## Conventions
+- Commits and PRs carry no AI attribution (no `Co-Authored-By: Claude` or session links). The owner is the only author.
 - Keep diffs focused. Don't rewrite unrelated code or add dependencies without a reason.
 - Match the existing style: 2-space indent, single quotes. No semicolons in the frontend; semicolons in the backend.
 - Frontend design: use the theme tokens, never raw hex (team colours in `iplData.js` are the one exception). No gradients, glows or emoji; icons come from `lucide-react`. Sentence case, not ALL CAPS (the dark theme's `display` font uppercases itself). Check both themes and a 375px-wide phone.

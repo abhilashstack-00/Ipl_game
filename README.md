@@ -1,330 +1,239 @@
-# 🏏 IPL Strategy Arena
+# Strategy Arena
 
-A full-stack, two-player IPL strategy game where managers compete by owning IPL teams and earning points from real match outcomes — using **virtual credits only** (no real money).
+A two-player IPL strategy game. Two managers auction the ten IPL teams with virtual credits, then score points all season from the real match results. No real money is involved.
+
+Play it at **https://abhilashstack-00.github.io/Ipl_game/**
+
+The site has a light theme ("scorebook") and a dark theme ("floodlight"); switch with the sun/moon button in the header.
 
 ---
 
-## 🚀 Quick Start
+## How to play
 
-### Prerequisites
-- Node.js v18+ 
-- npm v9+
+1. **Start a game.** One player creates a game and sends the 6-character invite code; the other joins with it.
+2. **Pick a home team.** Each player takes one team for free. First come, first served: once a team is taken, the other player picks a different one.
+3. **Auction.** The remaining teams come up one at a time for 20 seconds each. Both players bid in secret; the highest bid wins and only the winner pays. Everyone starts with 100 credits and can own up to 5 teams.
+   - A team nobody bids on is skipped.
+   - **As soon as one player has 5 teams, bidding ends.** Every unsold team goes to the other player at its base price. If they can't afford it all, their credits stop at 0.
+4. **Start the season.** Either player clicks **Start the season** once the auction is complete.
+5. **Score.** Whenever one of your teams plays one of your opponent's teams (a *contest*), the real result decides the points. Results come in automatically; nobody enters them by hand except the site admin as a fallback.
 
-### 1. Install all dependencies
+| Result | Points |
+|---|---|
+| Your team wins | +2 |
+| Tie or no result | +1 each |
+| Your team loses | 0 |
+
+**When you own both teams in a match:** pick which side you play (the **Play as** buttons on the Dashboard or Fixtures page) before match day. Your opponent gets the other side. If no side is picked by match day, the match doesn't score.
+
+**Base prices**
+
+| Team | Credits |
+|---|---|
+| CSK, MI | 18 |
+| RCB | 16 |
+| KKR | 15 |
+| DC, SRH | 14 |
+| RR | 13 |
+| PBKS, GT | 12 |
+| LSG | 11 |
+
+### Pages
+
+- **Lobby:** create or join a game, rules and points.
+- **Auction:** home team, live bidding with a timer, both squads and the auction log.
+- **Dashboard:** score, next contest, your record and squad, recent results.
+- **Fixtures:** every match, filtered by contests, your teams or all; upcoming, waiting for a result, and played.
+- **Head-to-head:** you against your opponent, both squads and every contest so far.
+- **Admin** (admins only): enter an official result when the live feed has none.
+
+---
+
+## Run it locally
+
+You need **Node.js 20 or newer** and npm.
+
 ```bash
-cd ipl-game
+git clone https://github.com/abhilashstack-00/Ipl_game.git
+cd Ipl_game
 npm run install:all
 ```
 
-### 2. Seed demo accounts (optional)
+Create the backend settings file and give it a secret. The backend will not start without `JWT_SECRET`.
+
+```bash
+cp backend/.env.example backend/.env
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+```
+
+Paste the printed value after `JWT_SECRET=` in `backend/.env`. Then, optionally, create two demo accounts (`Player1` and `Player2`, password `ipl2025`):
+
 ```bash
 node setup.js
 ```
-This creates:
-- `Player1` / `ipl2025`
-- `Player2` / `ipl2025`
 
-### 3. Start app (auto-opens browser)
+Start the backend and frontend together; the browser opens when it's ready:
+
 ```bash
 npm run dev:open
 ```
 
-This command starts both backend and frontend, then opens the React app automatically once Vite is ready.
+| Service | URL |
+|---|---|
+| Site | http://localhost:5173 |
+| Backend | http://localhost:3002 (health check: `/api/health`) |
 
-If you use `npm run dev` instead, open the URL shown by Vite manually.
+The site must run through Vite (`npm run dev:open` or `npm run dev`). Opening `frontend/index.html` directly shows a blank page.
 
-Do not use VS Code "Show Preview" on `frontend/index.html` for this project. The frontend is served by Vite and must run through the dev server.
+### Admins
 
-| Service  | URL                    |
-|----------|------------------------|
-| Frontend | http://localhost:5173  |
-| Backend  | http://localhost:3001  |
-| API docs | http://localhost:3001/api/health |
+An admin can enter official results on the Admin page when the live feed has none. Results can't be changed once saved. Two ways to make someone an admin:
 
----
-
-## 🎮 How to Play
-
-### Step 1 — Register & Login
-- Both players register with unique usernames
-- Each starts with **100 virtual credits**
-
-### Step 2 — Create or Join a Session
-- Player 1 clicks **Create Game Session** and gets a 6-character invite code
-- Player 2 clicks **Join a Game** and enters the code
-- Both players are now in the same game session
-
-### Step 3 — Team Auction
-Each player builds a squad of **up to 5 IPL teams**:
-
-| Action | Cost |
-|--------|------|
-| Select Home Team (free) | 0 credits |
-| Buy a team (market rate) | 11–18 credits |
-| Win a bidding war | Your bid amount |
-
-**Home Team Rules:**
-- Each player can pick one home team for free
-- If both pick the same team → **Bidding War!** Highest bid wins
-
-**Team Base Prices:**
-| Team | Price |
-|------|-------|
-| CSK, MI | 18cr |
-| RCB | 16cr |
-| KKR | 15cr |
-| DC, SRH | 14cr |
-| RR | 13cr |
-| PBKS, GT | 12cr |
-| LSG | 11cr |
-
-### Step 4 — Start the Season
-Once both players have built their squads, click **Finalize & Start Season**.
-
-### Step 5 — Process Matches
-Go to **Matches** tab and:
-- See which matches are **contests** (each team owned by a different player)
-- Official results are applied automatically from the live feed (or the seeded schedule)
-- If the live feed has no result, an **admin** enters the official result once; it then applies to every session
-
-Players can never choose a match winner. See `SECURITY_AUDIT.md`.
-
-To make someone an admin: `node setup.js --admin <username>`
-
-### Points System
-| Outcome | Points |
-|---------|--------|
-| Your team wins | +2 |
-| Draw / Tie | +1 each |
-| Your team loses | 0 |
-
-### Special Rule: Both Teams Owned by Same Player
-If one player owns both teams in a match, it is **not a contest** — no points awarded. The match is marked "No contest".
+- Set `ADMIN_USERNAMES=name1,name2` in `backend/.env` (or on Render). Exact spelling, capitals count. Listed accounts become admin when the server starts or when they register.
+- Or run `node setup.js --admin <username>` (`--revoke-admin` to undo). This needs access to the server's database file.
 
 ---
 
-## 🏗️ Tech Stack
+## Deploy
 
-| Layer | Tech |
-|-------|------|
-| Frontend | React 18 + React Router v6 |
-| Styling | Tailwind CSS + Custom CSS |
-| Backend | Node.js + Express |
-| Database | SQLite (via better-sqlite3) |
-| Auth | JWT (jsonwebtoken + bcryptjs) |
-| Real-time | Socket.io |
-| Build tool | Vite |
+The backend runs on Render and the site on GitHub Pages. Always deploy both together.
 
----
+### Backend (Render web service)
 
-## 📁 Project Structure
+- Root directory `backend`, build command `npm install`, start command `npm start`.
+- Environment variables:
 
-```
-ipl-game/
-├── backend/
-│   ├── src/
-│   │   ├── db/
-│   │   │   ├── database.js      # SQLite init & schema
-│   │   │   └── iplData.js       # Teams & match schedule
-│   │   ├── middleware/
-│   │   │   └── auth.js          # JWT middleware
-│   │   ├── routes/
-│   │   │   ├── auth.js          # /api/auth/*
-│   │   │   └── game.js          # /api/game/*
-│   │   └── server.js            # Express + Socket.io
-│   ├── data/                    # SQLite DB file (auto-created)
-│   ├── .env
-│   └── package.json
-│
-├── frontend/
-│   ├── src/
-│   │   ├── components/
-│   │   │   ├── Header.jsx
-│   │   │   └── UI.jsx           # Reusable components
-│   │   ├── context/
-│   │   │   ├── AuthContext.jsx
-│   │   │   └── GameContext.jsx
-│   │   ├── pages/
-│   │   │   ├── LoginPage.jsx
-│   │   │   ├── RegisterPage.jsx
-│   │   │   ├── LobbyPage.jsx
-│   │   │   ├── AuctionPage.jsx
-│   │   │   ├── DashboardPage.jsx
-│   │   │   ├── MatchesPage.jsx
-│   │   │   ├── LeaderboardPage.jsx
-│   │   │   └── SquadsPage.jsx
-│   │   ├── utils/
-│   │   │   ├── api.js           # Axios + Socket.io setup
-│   │   │   └── iplData.js       # Frontend team data
-│   │   ├── App.jsx
-│   │   ├── main.jsx
-│   │   └── index.css
-│   └── package.json
-│
-├── setup.js                     # Seed demo accounts
-├── package.json                 # Root scripts
-└── README.md
-```
+| Variable | Value |
+|---|---|
+| `JWT_SECRET` | A long random value (see the command above). Required. |
+| `FRONTEND_URLS` | `https://abhilashstack-00.github.io` (origin only, no path) |
+| `ADMIN_USERNAMES` | Your admin username |
+| `ALLOW_TEST_HELPER` | `false`, or leave it out |
+| `LIVE_MATCH_PROVIDER`, `CRICAPI_KEY` | `cricapi` and your key, for live results |
 
----
+### Site (GitHub Pages)
 
-## 🔌 API Reference
+GitHub Pages serves the built `index.html` and `assets/` from the root of `main`. After changing the frontend:
 
-### Auth
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/auth/register` | Register user |
-| POST | `/api/auth/login` | Login |
-| GET | `/api/auth/me` | Get current user |
+1. Make sure `frontend/.env.production` has `VITE_API_URL` and `VITE_SOCKET_URL` set to the Render URL (copy `frontend/.env.production.example`).
+2. Build and copy the output to the repo root:
 
-### Game
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/game/session` | Create session |
-| POST | `/api/game/session/join` | Join via invite code |
-| GET | `/api/game/session` | Get active session |
-| POST | `/api/game/home-team` | Select free home team |
-| POST | `/api/game/bid` | Place bid (conflict resolution) |
-| POST | `/api/game/buy-team` | Buy team with credits |
-| POST | `/api/game/finalize-auction` | Start the season |
-| GET | `/api/game/matches/:sessionId` | Get all matches with ownership |
-| POST | `/api/game/process-match` | Apply match result, award points |
-| GET | `/api/game/leaderboard` | Global leaderboard |
-| GET | `/api/game/ipl-data` | Teams + schedule |
-
----
-
-## 🔄 Real-time Events (Socket.io)
-
-| Event | Direction | Payload |
-|-------|-----------|---------|
-Sockets authenticate with the JWT (`io(url, { auth: { token } })`). Clients can only subscribe;
-every game event is emitted by the server after the database write succeeds.
-
-| Event | Direction | Payload |
-|-------|-----------|---------|
-| `join-session` | Client → Server | `{ sessionId }` (membership verified server-side) |
-| `leave-session` | Client → Server | none |
-| `join-error` | Server → Client | `{ error }` |
-| `auction-update` | Server → Client | `{ type, teamId, username, message }` |
-| `match-result` | Server → Client | `{ matchId, winnerName, points, message }` |
-| `state-update` | Server → Client | `{ event }` (refetch session/matches) |
-| `player-joined` | Server → Client | `{ userId, username }` |
-
----
-
-## 🛠️ Development Tips
-
-### Reset the database
-```bash
-rm backend/data/ipl_game.db
-node setup.js
-```
-
-### Add more matches
-Edit `backend/src/db/iplData.js` and add entries to `MATCH_SCHEDULE`. IDs must be unique strings.
-
-### Change JWT secret
-Edit `backend/.env` → `JWT_SECRET=<long random value>` (required; there is no default)
-
-### Build for production
 ```bash
 npm run build
-# Serve frontend/dist with any static server
-# Set NODE_ENV=production in backend/.env
+```
+
+Then replace the root `index.html` and `assets/` with `frontend/dist/index.html` and `frontend/dist/assets/`, commit, and push.
+
+### Free-tier notes
+
+- Render's free server sleeps when idle. The first visit shows "Waking up the game server" for up to a minute.
+- Render's free disk is wiped on every restart or redeploy, so **all accounts and games are lost** each time. Register your admin account again right after a deploy.
+
+---
+
+## Testing
+
+`security-tests/attack.js` runs about 39 attack and functional checks against a local server and prints `SECURE` or `VULNERABLE` for each. Run it after any backend change. See [`security-tests/README.md`](security-tests/README.md) for the exact commands. It needs a throwaway database and test-only settings, so never run it against the live server.
+
+---
+
+## Tech stack
+
+| Part | Technology |
+|---|---|
+| Frontend | React 18, React Router 6 (hash routing), Vite 5, Tailwind CSS 3, lucide-react icons |
+| Backend | Node.js, Express 4 |
+| Database | SQLite (better-sqlite3) |
+| Auth | JWT (jsonwebtoken) and bcrypt password hashes |
+| Real-time | Socket.IO 4 |
+| Live results | CricAPI (optional) |
+
+---
+
+## Project structure
+
+```
+backend/
+  src/
+    db/database.js          schema and migrations
+    db/iplData.js           teams and the built-in schedule
+    middleware/auth.js      JWT checks, admin check
+    routes/auth.js          /api/auth/*
+    routes/game.js          /api/game/* (auction, matches, results, admin)
+    services/liveScores.js  CricAPI client
+    services/adminBootstrap.js  ADMIN_USERNAMES
+    server.js               Express, CORS, Socket.IO
+frontend/
+  src/
+    components/             Header, UI kit, match rows, auth layout, server wake-up screen
+    context/                Auth, Game (API calls and sockets), Theme
+    pages/                  Login, Register, Lobby, Auction, Dashboard, Matches (Fixtures),
+                            HeadToHead, Admin
+    utils/                  API client, team data, match helpers
+    index.css               the two themes (colour and font variables)
+security-tests/             attack and regression checks
+setup.js                    demo accounts and admin promotion
+index.html, assets/         the built site that GitHub Pages serves
 ```
 
 ---
 
-## ✅ Features Checklist
+## API reference
 
-- [x] JWT Authentication (register/login)
-- [x] SQLite persistent database
-- [x] Session creation with invite code
-- [x] Real-time sync via Socket.io
-- [x] 100 virtual credits per player
-- [x] Home team selection (free)
-- [x] Bidding war on conflict
-- [x] Team purchase with credit validation
-- [x] 30-match IPL 2025 schedule
-- [x] Contest detection (each team = different owner)
-- [x] Match result simulation + manual entry
-- [x] Point system (W=+2, D=+1, L=0)
-- [x] "Both teams owned" no-contest rule
-- [x] Live leaderboard
-- [x] Match history
-- [x] Squad comparison view
-- [x] Responsive Tailwind UI
-- [x] Cricket-themed dark design (Teko/Rajdhani fonts)
-- [x] Toast notifications
+All game routes need `Authorization: Bearer <token>`. Routes that take a `sessionId` only work for players in that game. Request bodies may only contain the listed fields.
 
----
+### Auth
 
-## 🌐 Deploy For Friends (Render + GitHub Pages)
+| Method | Route | What it does |
+|---|---|---|
+| POST | `/api/auth/register` | Create an account (`username`, `password`) |
+| POST | `/api/auth/login` | Log in, returns a token |
+| GET | `/api/auth/me` | Current user |
 
-This project is full-stack, so deploy backend first, then frontend.
+### Game
 
-### 1. Deploy Backend (Render)
+| Method | Route | What it does |
+|---|---|---|
+| POST | `/api/game/session` | Create a game |
+| POST | `/api/game/session/join` | Join with an invite code |
+| GET | `/api/game/session` | Your current game |
+| POST | `/api/game/session/leave` | Leave (ends the game for both players) |
+| POST | `/api/game/home-team` | Pick your free home team |
+| POST | `/api/game/bid` | Bid on the team being auctioned |
+| POST | `/api/game/finalize-auction` | Start the season |
+| GET | `/api/game/matches/:sessionId` | Fixtures with owners and results (applies any new official results) |
+| POST | `/api/game/match-choice` | Pick your side when you own both teams |
+| POST | `/api/game/process-match` | Apply a match's official result to this game |
+| GET | `/api/game/ipl-data` | Teams and built-in schedule (no login needed) |
+| GET | `/api/game/admin/matches` | Admin: every match and its result source |
+| POST | `/api/game/admin/match-result` | Admin: record an official result (can't overwrite) |
+| GET | `/api/game/live-status` | Admin: live feed status |
 
-1. Push this repo to GitHub.
-2. Create a new **Web Service** in Render from the repo.
-3. Set service root to `backend`.
-4. Build command: `npm install`
-5. Start command: `npm start`
-6. Add environment variables:
+The client never sends a match winner; results only come from the schedule, the live feed or an admin.
 
-```env
-JWT_SECRET=<64 random hex chars: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))">
-FRONTEND_URLS=https://YOUR_GITHUB_USERNAME.github.io,http://localhost:5173
-```
+### Real-time events (Socket.IO)
 
-The server will not start without `JWT_SECRET`. `FRONTEND_URLS` entries are browser origins
-(scheme + host, no path).
+Connect with the token: `io(url, { auth: { token } })`. Clients can only join or leave their own game's room; every game event comes from the server after the database write.
 
-After deploy, note backend URL like:
-`https://ipl-game-backend.onrender.com`
-
-### 2. Configure Frontend Production Env
-
-Create `frontend/.env.production` from `frontend/.env.production.example`:
-
-```env
-VITE_API_URL=https://ipl-game-backend.onrender.com
-VITE_SOCKET_URL=https://ipl-game-backend.onrender.com
-```
-
-### 3. Deploy Frontend To GitHub Pages
-
-In `frontend/package.json`, set homepage to your actual GitHub username:
-
-```json
-"homepage": "https://YOUR_GITHUB_USERNAME.github.io/ipl-game"
-```
-
-Then run:
-
-```bash
-cd frontend
-npm install
-npm run deploy
-```
-
-Your app URL will be:
-`https://YOUR_GITHUB_USERNAME.github.io/ipl-game`
-
-### 4. Verify Multiplayer
-
-1. Open the GitHub Pages URL in two different browsers/devices.
-2. Register two users.
-3. Create and join a session via invite code.
-4. Confirm auction and match updates are real-time in both clients.
-
-### Notes
-
-- GitHub Pages hosts only frontend static files.
-- Backend must stay online on Render (or similar) for auth, game APIs, and Socket.io.
-- Render free tier can sleep when idle; first request may take a few seconds.
+| Event | Direction | Meaning |
+|---|---|---|
+| `join-session` | client to server | Subscribe to your game (`{ sessionId }`) |
+| `leave-session` | client to server | Unsubscribe |
+| `join-error` | server to client | Join refused |
+| `auction-update` | server to client | Home team picked, bid placed |
+| `match-result` | server to client | Points awarded for a match |
+| `state-update` | server to client | Something changed; refetch |
+| `player-joined`, `player-disconnected` | server to client | Opponent presence |
 
 ---
 
-*Built with ❤️ for the love of cricket and IPL*
+## Known limitations
+
+- Accounts and games are wiped whenever the Render server restarts (free tier). Moving to a hosted database such as Turso would fix it.
+- The built-in schedule covers 30 matches up to 20 April 2026; later fixtures come only from the live feed.
+- Points are also added to each account's lifetime total. The site shows per-game scores, but those lifetime totals mix games.
+- If neither player reaches 5 teams, the auction ends after one pass with some teams unsold.
+- The code has a "bidding war" for when both players want the same home team, but it can't trigger: the first pick is assigned straight away.
+- Leaving a game ends it for both players.
+
+For the security model and its assumptions, see [`SECURITY_AUDIT.md`](SECURITY_AUDIT.md).

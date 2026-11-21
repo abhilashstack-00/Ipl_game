@@ -177,7 +177,7 @@ export default function AuctionPage() {
           : auctionComplete
             ? 'Bidding is over. Either of you can start the season.'
           : !myPlayer?.homeTeam
-            ? 'Pick one team for free before the bidding starts. If you both pick the same team, you bid for it.'
+            ? 'Pick one team for free before the bidding starts. First come, first served: a team your opponent already took is off the table.'
             : `Teams come up one at a time for ${roundSeconds} seconds. Both of you bid in secret; the highest bid wins.`}
       </PageHeader>
 

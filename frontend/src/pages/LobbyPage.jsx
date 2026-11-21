@@ -7,7 +7,7 @@ import { InviteCodeBox, Alert, Spinner, PageHeader, SectionHeading } from '../co
 
 const STEPS = [
   ['Start a game', 'Create a game and send the invite code to your opponent, or join theirs.'],
-  ['Pick a home team', 'Each of you takes one team for free. If you both want the same one, you bid for it.'],
+  ['Pick a home team', 'Each of you takes one team for free. First come, first served.'],
   ['Auction', 'The other teams come up one at a time for 20 seconds. Highest bid wins. 100 credits, five teams each. Once one of you has five, the rest go to the other at base price.'],
   ['Play the season', 'Points come from the real IPL results whenever your teams play theirs.'],
 ]
