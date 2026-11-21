@@ -37,6 +37,8 @@ Severity: **Critical** = breaks game integrity for any player. **High** = cross-
 | 18 | `services/liveScores.js` | `parseWinner` | Third-party status string | **High (correctness of the trusted source).** "Mumbai Indians won the toss…" parsed as "MI won the match", and those points would have been auto-awarded. | Ignores `matchEnded === false` and any status mentioning the toss. |
 | 19 | `routes/game.js` | `GET /live-status` | n/a | **Low.** Provider diagnostics exposed to every user. | Admin only. |
 | 20 | all game routes | request bodies | Extra fields (`userId`, `role`, `credits`, …) | **Defense in depth.** None were used, but nothing stopped future code from reading them. | Per-route `allowFields([...])` returns 400 for unexpected fields. |
+| 21 | `routes/game.js` | `GET /leaderboard` | n/a | **Low (privacy).** Any logged-in player could list every account on the site with their stats, including admin accounts. The frontend fetched it but never showed it. Found during the 21 Nov 2026 redesign. | Route and page removed; the harness checks it returns 404. |
+| 22 | `frontend/.../AuthContext.jsx` | startup `/auth/me` | n/a | **Availability.** Any error, including a Render cold-start timeout, deleted the saved login. | Only a 401 logs the user out; `ServerGate` waits for `/api/health` first. |
 
 ### Database consistency
 All multi-step writes now run inside `db.transaction()`: session create/join/leave, home-team selection, bidding and bid-war resolution, auction round resolution (`syncAuctionState`), finalize, match choice, result application, auto-apply, and seeding.

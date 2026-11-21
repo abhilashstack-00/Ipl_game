@@ -2,92 +2,132 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+  Two themes, one set of tokens. Colours are RGB triplets so Tailwind can add opacity
+  (e.g. bg-win/10). The theme is chosen in index.html before React loads and toggled
+  by ThemeContext.
+
+  light = "scorebook": printed-scorecard paper, black ink, cricket-ball red, pitch green.
+  dark  = "floodlight": stadium at night, chalk-white text, one scoreboard-amber accent.
+*/
+:root,
+[data-theme='light'] {
+  --c-bg: 243 239 228;
+  --c-surface: 251 249 243;
+  --c-inset: 236 230 214;
+  --c-line: 216 210 194;
+  --c-line-strong: 28 27 25;
+  --c-ink: 28 27 25;
+  --c-ink-2: 74 71 63;
+  --c-muted: 104 100 91;
+  --c-primary: 28 27 25;
+  --c-on-primary: 243 239 228;
+  --c-accent: 176 38 30;
+  --c-win: 47 93 58;
+  --c-loss: 176 38 30;
+  --c-draw: 130 98 12;
+
+  --font-display: 'Source Serif 4', Georgia, serif;
+  --font-body: 'IBM Plex Sans', system-ui, sans-serif;
+  --font-score: 'IBM Plex Mono', ui-monospace, monospace;
+  --display-weight: 600;
+  --display-case: none;
+  --display-tracking: -0.01em;
+  --radius: 2px;
+  --radius-card: 4px;
+  color-scheme: light;
+}
+
+[data-theme='dark'] {
+  --c-bg: 16 19 18;
+  --c-surface: 24 28 27;
+  --c-inset: 11 13 12;
+  --c-line: 42 48 46;
+  --c-line-strong: 85 96 90;
+  --c-ink: 237 234 226;
+  --c-ink-2: 196 193 184;
+  --c-muted: 141 148 143;
+  --c-primary: 242 168 29;
+  --c-on-primary: 26 20 5;
+  --c-accent: 242 168 29;
+  --c-win: 127 203 138;
+  --c-loss: 226 115 94;
+  --c-draw: 229 196 107;
+
+  --font-display: 'Barlow Condensed', 'Arial Narrow', sans-serif;
+  --font-body: 'IBM Plex Sans', system-ui, sans-serif;
+  --font-score: 'Barlow Condensed', 'Arial Narrow', sans-serif;
+  --display-weight: 600;
+  --display-case: uppercase;
+  --display-tracking: 0.02em;
+  --radius: 6px;
+  --radius-card: 8px;
+  color-scheme: dark;
+}
+
 @layer base {
-  html, body, #root {
-    height: 100%;
-    width: 100%;
-  }
+  html, body, #root { min-height: 100%; }
   body {
-    @apply bg-ipl-deep-blue text-white font-rajdhani;
-    min-height: 100vh;
+    @apply bg-bg text-ink font-body antialiased;
+    font-size: 15px;
+    line-height: 1.55;
   }
-  ::-webkit-scrollbar { width: 6px; height: 6px; }
-  ::-webkit-scrollbar-track { @apply bg-ipl-deep-blue; }
-  ::-webkit-scrollbar-thumb { @apply bg-ipl-mid-blue rounded; }
+  :focus-visible {
+    outline: 2px solid rgb(var(--c-accent));
+    outline-offset: 2px;
+  }
+  ::selection { background: rgb(var(--c-accent) / 0.25); }
 }
 
 @layer components {
-  .card {
-    @apply bg-white/5 border border-yellow-400/20 rounded-xl backdrop-blur-sm;
+  .display {
+    font-family: var(--font-display);
+    font-weight: var(--display-weight);
+    text-transform: var(--display-case);
+    letter-spacing: var(--display-tracking);
+    line-height: 1.1;
   }
-  .card-glow {
-    @apply card border-yellow-400/60;
-    box-shadow: 0 0 20px rgba(255, 215, 0, 0.1);
+  .score {
+    font-family: var(--font-score);
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+    line-height: 1;
   }
-  .btn-gold {
-    @apply bg-gradient-to-r from-yellow-400 to-orange-400 text-ipl-deep-blue font-bold font-rajdhani uppercase tracking-wider rounded-lg transition-all hover:-translate-y-0.5 hover:shadow-lg hover:shadow-yellow-400/30 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:translate-y-0;
+  .eyebrow { @apply text-xs text-muted; }
+  .card { @apply bg-surface border border-line rounded-card; }
+
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded px-4 py-2.5 text-sm font-medium
+      transition-colors duration-150 disabled:opacity-50 disabled:cursor-not-allowed select-none;
   }
-  .btn-outline {
-    @apply border border-yellow-400/60 text-yellow-400 font-bold font-rajdhani uppercase tracking-wider rounded-lg transition-all hover:bg-yellow-400/10 active:scale-95;
+  .btn-primary { @apply btn bg-primary text-on-primary hover:bg-primary/90; }
+  .btn-secondary { @apply btn border border-line-strong/60 text-ink hover:bg-inset; }
+  .btn-ghost { @apply btn text-ink-2 hover:bg-inset hover:text-ink; }
+  .btn-danger { @apply btn border border-loss/60 text-loss hover:bg-loss/10; }
+  .btn-sm { @apply px-3 py-1.5 text-xs; }
+
+  .input {
+    @apply w-full bg-surface border border-line rounded px-3 py-2.5 text-ink placeholder:text-muted
+      transition-colors focus:border-line-strong focus:outline-none;
   }
-  .btn-danger {
-    @apply bg-gradient-to-r from-red-600 to-red-800 text-white font-bold font-rajdhani uppercase tracking-wider rounded-lg transition-all hover:-translate-y-0.5 active:scale-95;
-  }
-  .btn-success {
-    @apply bg-gradient-to-r from-green-500 to-green-700 text-white font-bold font-rajdhani uppercase tracking-wider rounded-lg transition-all hover:-translate-y-0.5 active:scale-95;
-  }
-  .input-field {
-    @apply w-full px-4 py-3 bg-white/10 border border-yellow-400/20 rounded-lg text-white font-rajdhani placeholder-gray-500 outline-none transition-all focus:border-yellow-400/60 focus:ring-1 focus:ring-yellow-400/30;
-  }
-  .section-title {
-    @apply font-teko text-yellow-400 uppercase tracking-widest;
-  }
-  .badge {
-    @apply inline-block px-2 py-0.5 rounded text-xs font-bold uppercase tracking-wider;
-  }
-  .badge-gold { @apply bg-yellow-400/15 text-yellow-400 border border-yellow-400/30; }
-  .badge-blue { @apply bg-cyan-400/10 text-cyan-400 border border-cyan-400/30; }
-  .badge-green { @apply bg-green-400/15 text-green-400 border border-green-400/30; }
-  .badge-red { @apply bg-red-400/15 text-red-400 border border-red-400/30; }
-  .badge-orange { @apply bg-orange-400/15 text-orange-400 border border-orange-400/30; }
+  .label { @apply block text-sm font-medium text-ink-2 mb-1.5; }
+
+  .tag { @apply inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs font-medium whitespace-nowrap; }
+  .tag-win { @apply tag bg-win/10 text-win; }
+  .tag-loss { @apply tag bg-loss/10 text-loss; }
+  .tag-draw { @apply tag bg-draw/10 text-draw; }
+  .tag-accent { @apply tag bg-accent/10 text-accent; }
+  .tag-neutral { @apply tag bg-inset text-ink-2; }
+
+  .divide-rows > * + * { @apply border-t border-line; }
 }
 
-.bg-cricket-pattern {
-  background-image:
-    radial-gradient(ellipse at 20% 20%, rgba(255,107,53,0.08) 0%, transparent 50%),
-    radial-gradient(ellipse at 80% 80%, rgba(0,229,255,0.06) 0%, transparent 50%),
-    radial-gradient(ellipse at 50% 10%, rgba(255,215,0,0.04) 0%, transparent 40%);
-}
+.fade-in { animation: fadeIn 0.2s ease-out; }
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 
-.team-badge {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 10px;
-  font-family: 'Teko', sans-serif;
-  font-weight: 700;
-  letter-spacing: 1px;
-  border-width: 2px;
-  border-style: solid;
-}
+.live-dot { animation: livePulse 1.6s ease-in-out infinite; }
+@keyframes livePulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 
-.live-pulse {
-  animation: livePulse 1.5s ease-in-out infinite;
-}
-
-@keyframes livePulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
-}
-
-.scoreboard-number {
-  font-family: 'Teko', sans-serif;
-  font-weight: 700;
-}
-
-.animate-fade-in { animation: fadeInUp 0.4s ease forwards; }
-
-@keyframes fadeInUp {
-  from { opacity: 0; transform: translateY(12px); }
-  to   { opacity: 1; transform: translateY(0); }
+@media (prefers-reduced-motion: reduce) {
+  .fade-in, .live-dot { animation: none; }
 }

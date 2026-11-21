@@ -14,7 +14,12 @@ export function AuthProvider({ children }) {
     if (token) {
       api.get('/auth/me')
         .then(r => { setUser(r.data.user); localStorage.setItem('ipl_user', JSON.stringify(r.data.user)) })
-        .catch(() => { localStorage.removeItem('ipl_token'); localStorage.removeItem('ipl_user'); setUser(null) })
+        .catch((err) => {
+          // Only a rejected token means "logged out". A network error or slow server keeps the saved login.
+          if (err.response?.status === 401) {
+            localStorage.removeItem('ipl_token'); localStorage.removeItem('ipl_user'); setUser(null)
+          }
+        })
         .finally(() => setLoading(false))
     } else {
       setLoading(false)

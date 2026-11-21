@@ -1,134 +1,180 @@
-import React from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { AlertTriangle, Check, CheckCircle2, Copy, Info, X, XCircle } from 'lucide-react'
 import { getTeam } from '../utils/iplData'
 
-export function TeamBadge({ teamId, size = 'md' }) {
+// ---------------------------------------------------------------------------
+// Teams and players
+// ---------------------------------------------------------------------------
+
+const CHIP_SIZES = {
+  sm: 'h-6 min-w-[2.5rem] px-1.5 text-[13px]',
+  md: 'h-8 min-w-[3rem] px-2 text-base',
+  lg: 'h-14 min-w-[4.5rem] px-3 text-2xl',
+}
+
+// A team's short code on its own colours. Team colours appear only here, so they stay meaningful.
+export function TeamChip({ teamId, size = 'md', className = '' }) {
   const t = getTeam(teamId)
-  const sizes = { sm: 'w-10 h-10 text-xs rounded-lg', md: 'w-14 h-14 text-sm rounded-xl', lg: 'w-20 h-20 text-base rounded-2xl' }
   return (
-    <div
-      className={`team-badge flex-shrink-0 font-teko font-bold tracking-wide ${sizes[size]}`}
-      style={{ background: t.bg, color: t.color, borderColor: t.color + '80' }}
+    <span
+      className={`score inline-flex items-center justify-center rounded ${CHIP_SIZES[size]} ${className}`}
+      style={{ background: t.bg, color: t.color }}
+      title={t.name}
+      aria-label={t.name}
     >
       {t.short}
-    </div>
+    </span>
   )
 }
 
-export function TeamCard({ teamId, owned, ownedByMe, ownerName, onBuy, onSelectHome, canBuy, squadFull, homeSelected, isHomeConflict }) {
-  const t = getTeam(teamId)
+export function Avatar({ name, highlight = false, size = 'md' }) {
+  const s = size === 'lg' ? 'w-12 h-12 text-lg' : size === 'sm' ? 'w-7 h-7 text-xs' : 'w-9 h-9 text-sm'
+  return (
+    <span
+      aria-hidden="true"
+      className={`${s} inline-flex flex-shrink-0 items-center justify-center rounded-full font-semibold ${
+        highlight ? 'bg-primary text-on-primary' : 'bg-inset text-ink-2 border border-line'
+      }`}
+    >
+      {(name?.[0] || '?').toUpperCase()}
+    </span>
+  )
+}
+
+// Broadcast-style score strip: you on the left, opponent on the right.
+export function ScoreStrip({ me, opponent, mine = 0, theirs = 0, className = '' }) {
   return (
     <div
-      className={`card p-4 transition-all duration-200 ${!owned ? 'hover:-translate-y-1 cursor-pointer' : 'opacity-60'}`}
-      style={{ borderColor: ownedByMe ? t.color + 'aa' : owned ? 'rgba(255,255,255,0.1)' : t.color + '40' }}
+      className={`grid grid-cols-[1fr_auto_1fr] items-stretch border border-line rounded-card overflow-hidden bg-surface ${className}`}
+      aria-label={`Score: you ${mine}, ${opponent?.username || 'opponent'} ${theirs}`}
     >
-      <div className="flex items-center gap-3 mb-3">
-        <TeamBadge teamId={teamId} />
-        <div className="flex-1 min-w-0">
-          <div className="font-bold text-sm leading-tight truncate">{t.name}</div>
-          <div className="font-teko text-yellow-400 text-lg">Base: {t.basePrice}cr</div>
-        </div>
+      <div className="px-3 py-2 min-w-0">
+        <div className="eyebrow">You</div>
+        <div className="text-sm font-medium truncate">{me?.username || '—'}</div>
       </div>
-      {owned ? (
-        <div className="text-center py-1">
-          {ownedByMe
-            ? <span className="badge badge-gold">✓ YOUR TEAM</span>
-            : <span className="badge badge-red">✗ {ownerName}'s</span>
-          }
-        </div>
-      ) : (
-        <div className="flex flex-col gap-2">
-          {!homeSelected && (
-            <button
-              className="btn-outline py-1.5 px-3 text-xs w-full"
-              onClick={() => onSelectHome(teamId)}
-            >
-              🏠 Home Team (Free)
-            </button>
-          )}
-          <button
-            className="btn-gold py-1.5 px-3 text-xs w-full"
-            onClick={() => onBuy(teamId)}
-            disabled={!canBuy || squadFull}
-            title={squadFull ? 'Squad full' : !canBuy ? 'Not enough cr' : ''}
-          >
-            Buy — {t.basePrice}cr
-          </button>
-        </div>
-      )}
+      <div className="score flex items-center gap-2 px-4 bg-inset text-3xl" aria-hidden="true">
+        <span className={mine >= theirs ? 'text-ink' : 'text-ink-2'}>{mine}</span>
+        <span className="text-muted text-xl">–</span>
+        <span className={theirs > mine ? 'text-ink' : 'text-ink-2'}>{theirs}</span>
+      </div>
+      <div className="px-3 py-2 min-w-0 text-right">
+        <div className="eyebrow">Opponent</div>
+        <div className="text-sm font-medium truncate">{opponent?.username || 'Waiting…'}</div>
+      </div>
     </div>
   )
 }
 
-export function Spinner({ size = 'md' }) {
-  const s = size === 'sm' ? 'w-4 h-4 border-2' : size === 'lg' ? 'w-10 h-10 border-4' : 'w-6 h-6 border-2'
-  return (
-    <div className={`${s} border-yellow-400/30 border-t-yellow-400 rounded-full animate-spin`} />
-  )
-}
+// ---------------------------------------------------------------------------
+// Layout and feedback
+// ---------------------------------------------------------------------------
 
-export function StatBox({ label, value, color = 'text-yellow-400', sub }) {
+export function PageHeader({ eyebrow, title, children, actions }) {
   return (
-    <div className="bg-white/5 border border-yellow-400/10 rounded-xl p-4 text-center">
-      <div className={`font-teko text-3xl font-bold ${color}`}>{value}</div>
-      <div className="text-gray-400 text-xs uppercase tracking-widest mt-0.5">{label}</div>
-      {sub && <div className="text-gray-500 text-xs mt-1">{sub}</div>}
+    <div className="flex flex-wrap items-end justify-between gap-4 mb-6">
+      <div className="min-w-0">
+        {eyebrow && <div className="eyebrow mb-1">{eyebrow}</div>}
+        <h1 className="display text-3xl sm:text-4xl">{title}</h1>
+        {children && <p className="text-ink-2 mt-2 max-w-2xl">{children}</p>}
+      </div>
+      {actions && <div className="flex flex-wrap gap-2">{actions}</div>}
     </div>
   )
 }
 
-export function ProgressBar({ value, max, color = 'from-yellow-400 to-orange-400' }) {
-  const pct = max > 0 ? Math.round((value / max) * 100) : 50
+export function SectionHeading({ children, aside, id }) {
   return (
-    <div className="w-full bg-white/10 rounded-full h-2 overflow-hidden">
-      <div
-        className={`h-full rounded-full bg-gradient-to-r ${color} transition-all duration-500`}
-        style={{ width: `${pct}%` }}
-      />
+    <div className="flex items-baseline justify-between gap-3 mb-3">
+      <h2 id={id} className="display text-xl">{children}</h2>
+      {aside && <div className="text-sm text-muted">{aside}</div>}
     </div>
   )
 }
 
-export function SectionTitle({ children, className = '' }) {
+export function Spinner({ size = 'md', label = 'Loading' }) {
+  const s = size === 'sm' ? 'w-4 h-4 border-2' : size === 'lg' ? 'w-9 h-9 border-[3px]' : 'w-6 h-6 border-2'
   return (
-    <h2 className={`font-teko text-yellow-400 text-2xl uppercase tracking-widest ${className}`}>
-      {children}
-    </h2>
+    <span role="status" className="inline-flex">
+      <span className={`${s} rounded-full border-current border-r-transparent animate-spin opacity-70`} />
+      <span className="sr-only">{label}</span>
+    </span>
   )
 }
 
-export function Alert({ type = 'info', children }) {
-  const styles = {
-    info: 'bg-cyan-400/10 border-cyan-400/30 text-cyan-300',
-    success: 'bg-green-400/10 border-green-400/30 text-green-300',
-    danger: 'bg-red-400/10 border-red-400/30 text-red-300',
-    warning: 'bg-yellow-400/10 border-yellow-400/30 text-yellow-300',
-  }
+const ALERT_STYLES = {
+  info: { box: 'bg-inset border-line', icon: Info, iconClass: 'text-ink-2' },
+  success: { box: 'bg-win/10 border-win/30', icon: CheckCircle2, iconClass: 'text-win' },
+  warning: { box: 'bg-draw/10 border-draw/30', icon: AlertTriangle, iconClass: 'text-draw' },
+  danger: { box: 'bg-loss/10 border-loss/30', icon: XCircle, iconClass: 'text-loss' },
+}
+
+export function Alert({ type = 'info', children, className = '' }) {
+  const s = ALERT_STYLES[type] || ALERT_STYLES.info
+  const Icon = s.icon
   return (
-    <div className={`border rounded-xl px-4 py-3 text-sm ${styles[type]}`}>
-      {children}
+    <div className={`flex gap-2.5 border rounded px-3 py-2.5 text-sm text-ink ${s.box} ${className}`} role={type === 'danger' ? 'alert' : undefined}>
+      <Icon size={18} className={`flex-shrink-0 mt-px ${s.iconClass}`} aria-hidden="true" />
+      <div className="min-w-0">{children}</div>
     </div>
   )
 }
 
-// Rendered into document.body through a portal. Pages use `.animate-fade-in`, which leaves a
-// `transform` on the page wrapper; a `position: fixed` element inside a transformed parent is
-// positioned against that parent instead of the window, so the dialog could end up off-screen.
-export function Modal({ open, onClose, title, children, width = 'max-w-lg' }) {
+export function EmptyState({ icon: Icon, title, children, action }) {
+  return (
+    <div className="text-center py-12 px-4">
+      {Icon && <Icon size={28} className="mx-auto mb-3 text-muted" aria-hidden="true" />}
+      <div className="font-medium">{title}</div>
+      {children && <p className="text-sm text-muted mt-1 max-w-sm mx-auto">{children}</p>}
+      {action && <div className="mt-4">{action}</div>}
+    </div>
+  )
+}
+
+export function Stat({ label, value, tone }) {
+  const color = tone === 'win' ? 'text-win' : tone === 'loss' ? 'text-loss' : tone === 'draw' ? 'text-draw' : 'text-ink'
+  return (
+    <div className="bg-inset rounded px-3 py-2.5">
+      <div className={`score text-2xl ${color}`}>{value}</div>
+      <div className="eyebrow mt-1">{label}</div>
+    </div>
+  )
+}
+
+// Rendered into document.body through a portal, so no transformed ancestor can move it off-screen.
+export function Modal({ open, onClose, title, children, width = 'max-w-md' }) {
+  const panelRef = useRef(null)
+  const onCloseRef = useRef(onClose)
+  onCloseRef.current = onClose
+
+  // Runs only when the dialog opens or closes. (Depending on onClose would re-run it on every
+  // re-render, e.g. every second on the auction page, and steal focus from the field being typed in.)
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e) => { if (e.key === 'Escape') onCloseRef.current?.() }
+    document.addEventListener('keydown', onKey)
+    // Move focus into the dialog unless a field inside it already took it (autoFocus).
+    if (panelRef.current && !panelRef.current.contains(document.activeElement)) panelRef.current.focus()
+    return () => document.removeEventListener('keydown', onKey)
+  }, [open])
+
   if (!open) return null
   return createPortal(
-    <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4" onClick={onClose}>
+    <div className="fixed inset-0 z-50 bg-black/50 flex items-end sm:items-center justify-center p-0 sm:p-4" onClick={onClose}>
       <div
+        ref={panelRef}
+        tabIndex={-1}
         role="dialog"
         aria-modal="true"
         aria-label={typeof title === 'string' ? title : undefined}
-        className={`bg-ipl-mid-blue border border-yellow-400/60 rounded-2xl p-6 w-full ${width} shadow-2xl animate-fade-in`}
-        style={{ boxShadow: '0 0 40px rgba(255,215,0,0.12)' }}
+        className={`card w-full ${width} p-5 sm:p-6 fade-in rounded-b-none sm:rounded-card max-h-[90vh] overflow-y-auto focus:outline-none`}
         onClick={e => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between mb-5">
-          <h3 className="font-teko text-yellow-400 text-2xl uppercase tracking-wider">{title}</h3>
-          <button onClick={onClose} aria-label="Close" className="text-gray-400 hover:text-white text-2xl leading-none">&times;</button>
+        <div className="flex items-start justify-between gap-4 mb-4">
+          <h2 className="display text-2xl">{title}</h2>
+          <button onClick={onClose} aria-label="Close" className="btn-ghost p-1.5 -mr-1.5 -mt-1">
+            <X size={20} aria-hidden="true" />
+          </button>
         </div>
         {children}
       </div>
@@ -137,19 +183,18 @@ export function Modal({ open, onClose, title, children, width = 'max-w-lg' }) {
   )
 }
 
+const TOAST_ICONS = { success: CheckCircle2, danger: XCircle, warning: AlertTriangle, info: Info }
+const TOAST_COLORS = { success: 'text-win', danger: 'text-loss', warning: 'text-draw', info: 'text-ink-2' }
+
 export function ToastContainer({ notifications }) {
   return (
-    <div className="fixed top-20 right-4 z-50 flex flex-col gap-2 max-w-xs">
+    <div className="fixed z-50 bottom-4 inset-x-4 sm:inset-x-auto sm:right-4 sm:w-80 flex flex-col gap-2" aria-live="polite">
       {notifications.map(n => {
-        const styles = {
-          success: 'bg-green-600 text-white',
-          danger: 'bg-red-600 text-white',
-          warning: 'bg-yellow-500 text-black',
-          info: 'bg-blue-600 text-white',
-        }
+        const Icon = TOAST_ICONS[n.type] || Info
         return (
-          <div key={n.id} className={`px-4 py-3 rounded-xl font-semibold text-sm shadow-xl animate-fade-in ${styles[n.type] || styles.info}`}>
-            {n.msg}
+          <div key={n.id} className="card flex gap-2.5 px-3.5 py-3 text-sm fade-in shadow-lg shadow-black/10">
+            <Icon size={18} className={`flex-shrink-0 mt-px ${TOAST_COLORS[n.type] || TOAST_COLORS.info}`} aria-hidden="true" />
+            <span>{n.msg}</span>
           </div>
         )
       })}
@@ -158,29 +203,24 @@ export function ToastContainer({ notifications }) {
 }
 
 export function InviteCodeBox({ code }) {
-  const [copied, setCopied] = React.useState(false)
-  const copy = () => {
-    navigator.clipboard.writeText(code)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
+  const [copied, setCopied] = useState(false)
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(code)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch { /* clipboard blocked: the code is still visible to copy by hand */ }
   }
   return (
-    <div className="flex items-center gap-3 bg-white/5 border border-yellow-400/30 rounded-xl px-4 py-3">
-      <span className="text-gray-400 text-sm uppercase tracking-wider">Invite Code:</span>
-      <span className="font-teko text-yellow-400 text-2xl tracking-widest flex-1">{code}</span>
-      <button className="btn-outline py-1 px-3 text-xs" onClick={copy}>
-        {copied ? '✓ Copied' : 'Copy'}
+    <div className="flex items-center gap-3 border border-line rounded-card bg-surface px-4 py-3">
+      <div className="flex-1 min-w-0">
+        <div className="eyebrow">Invite code</div>
+        <div className="score text-3xl tracking-[0.2em]">{code}</div>
+      </div>
+      <button className="btn-secondary btn-sm" onClick={copy} aria-label="Copy invite code">
+        {copied ? <Check size={16} aria-hidden="true" /> : <Copy size={16} aria-hidden="true" />}
+        {copied ? 'Copied' : 'Copy'}
       </button>
-    </div>
-  )
-}
-
-export function EmptyState({ icon, title, subtitle }) {
-  return (
-    <div className="text-center py-16 text-gray-500">
-      <div className="text-5xl mb-3">{icon}</div>
-      <div className="font-teko text-xl text-gray-400 uppercase tracking-wider">{title}</div>
-      {subtitle && <div className="text-sm mt-1">{subtitle}</div>}
     </div>
   )
 }

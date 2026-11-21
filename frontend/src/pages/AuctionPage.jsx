@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { Gavel, Home, Play } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { useGame } from '../context/GameContext'
 import { IPL_TEAMS, getTeam, MAX_TEAMS, STARTING_CREDITS } from '../utils/iplData'
-import { TeamBadge, Modal, Alert, Spinner, SectionTitle, InviteCodeBox } from '../components/UI'
+import { TeamChip, Avatar, Modal, Alert, Spinner, PageHeader, SectionHeading, InviteCodeBox } from '../components/UI'
 
 export default function AuctionPage() {
   const { user, refreshUser } = useAuth()
@@ -21,64 +22,48 @@ export default function AuctionPage() {
     if (!session) navigate('/lobby')
   }, [session, navigate])
 
+  // Refresh the auction state every second; the server's roundEndsAt drives the timer.
   useEffect(() => {
     if (!session?.session?.id || session?.session?.status !== 'auction') return
-
     const timerId = setInterval(async () => {
-      // Sync with server time instead of pure client time to avoid drift
-      const freshSession = await fetchSession()
-      if (freshSession?.auction?.roundEndsAt) {
-        // Use server's roundEndsAt and current time to calculate accurate remaining time
-        setNowTs(Math.floor(Date.now() / 1000))
-      } else {
-        setNowTs(Math.floor(Date.now() / 1000))
-      }
+      await fetchSession()
+      setNowTs(Math.floor(Date.now() / 1000))
     }, 1000)
-
     return () => clearInterval(timerId)
   }, [session?.session?.id, session?.session?.status, fetchSession])
 
+  // Announce round changes.
   useEffect(() => {
     if (!session?.auction || !session?.players?.length) return
-
     const currentAuction = session.auction
     const previousAuction = prevAuctionRef.current
 
     if (!previousAuction) {
-      prevAuctionRef.current = {
-        activeTeamId: currentAuction.activeTeamId,
-        status: currentAuction.status,
-      }
+      prevAuctionRef.current = { activeTeamId: currentAuction.activeTeamId, status: currentAuction.status }
       return
     }
 
     if (previousAuction.status !== 'running' && currentAuction.status === 'running' && currentAuction.activeTeamId) {
-      addNotification(`🎯 Auction started: ${getTeam(currentAuction.activeTeamId).name} is live for ${currentAuction.roundSeconds || 20}s`, 'info')
+      addNotification(`Auction started. ${getTeam(currentAuction.activeTeamId).name} is up for ${currentAuction.roundSeconds || 20} seconds.`, 'info')
     }
 
     if (previousAuction.activeTeamId && previousAuction.activeTeamId !== currentAuction.activeTeamId) {
+      // The round ended: close an open bid dialog so it never silently switches to the next team.
+      if (!session.pendingBid) { setShowBidModal(false); setBidError('') }
       const endedTeamId = previousAuction.activeTeamId
       const winner = session.players.find(p => p.teams?.some(t => t.teamId === endedTeamId))
-
       if (winner) {
-        addNotification(`🔨 ${winner.username} won ${getTeam(endedTeamId).name}`, winner.id === user?.id ? 'success' : 'info')
+        addNotification(`${winner.id === user?.id ? 'You' : winner.username} won ${getTeam(endedTeamId).name}`, winner.id === user?.id ? 'success' : 'info')
       } else {
-        addNotification(`⏱️ No bids for ${getTeam(endedTeamId).name}. Moving to next team.`, 'warning')
-      }
-
-      if (currentAuction.activeTeamId) {
-        addNotification(`🎯 Next up: ${getTeam(currentAuction.activeTeamId).name} (${currentAuction.roundSeconds || 20}s round)`, 'info')
+        addNotification(`No bids for ${getTeam(endedTeamId).name}. Next team.`, 'warning')
       }
     }
 
     if (previousAuction.status !== 'completed' && currentAuction.status === 'completed') {
-      addNotification('✅ All auction rounds completed. Finalize to start the season.', 'success')
+      addNotification('Auction complete. Start the season when you are ready.', 'success')
     }
 
-    prevAuctionRef.current = {
-      activeTeamId: currentAuction.activeTeamId,
-      status: currentAuction.status,
-    }
+    prevAuctionRef.current = { activeTeamId: currentAuction.activeTeamId, status: currentAuction.status }
   }, [session?.auction, session?.players, addNotification, user?.id])
 
   if (!session) return null
@@ -96,9 +81,17 @@ export default function AuctionPage() {
   const myTeamIds = myPlayer?.teams?.map(t => t.teamId) || []
   const opponentTeamIds = opponent?.teams?.map(t => t.teamId) || []
   const myCredits = myPlayer?.credits ?? STARTING_CREDITS
+  const squadFull = myTeamIds.length >= MAX_TEAMS
 
   const bothPlayersReady = session.players?.length === 2
   const auctionComplete = auction?.status === 'completed' || (myPlayer?.teams?.length >= MAX_TEAMS && (opponent?.teams?.length >= MAX_TEAMS))
+  const isRunning = !pendingBid && auction?.status === 'running' && !!activeTeamId
+
+  const title = !bothPlayersReady ? 'Waiting for your opponent'
+    : auctionComplete ? 'Auction complete'
+    : !myPlayer?.homeTeam ? 'Pick your home team'
+    : pendingBid ? 'Bidding war'
+    : 'Auction'
 
   const handleHomeTeam = async (teamId) => {
     setLoading(`home_${teamId}`)
@@ -107,39 +100,39 @@ export default function AuctionPage() {
       await refreshUser()
       if (result.conflict) {
         setShowBidModal(true)
-        addNotification(`⚔️ Both managers want ${getTeam(teamId).name}! Bidding war!`, 'warning')
+        addNotification(`You both want ${getTeam(teamId).name}. Place a bid.`, 'warning')
       } else {
-        addNotification(`🏠 ${getTeam(teamId).name} is your home team (free)!`, 'success')
+        addNotification(`${getTeam(teamId).name} is your home team`, 'success')
       }
     } catch (err) {
-      addNotification(err.response?.data?.error || 'Failed to select home team', 'danger')
+      addNotification(err.response?.data?.error || "Couldn't pick that home team", 'danger')
     } finally { setLoading('') }
   }
 
   const handleBid = async () => {
     setBidError('')
-    if (!bidTeamId) { setBidError('No active team to bid on right now'); return }
+    if (!bidTeamId) { setBidError('No team is up for bidding right now.'); return }
     const amount = parseInt(bidAmounts[bidTeamId] || 0)
-    if (!amount || amount < 1) { setBidError('Enter a valid bid amount'); return }
-    if (amount > myCredits) { setBidError(`You only have ${myCredits} cr`); return }
+    if (!amount || amount < 1) { setBidError('Enter a whole number of credits.'); return }
+    if (amount > myCredits) { setBidError(`You only have ${myCredits} credits.`); return }
     setLoading('bid')
     try {
       const result = await placeBid(session.session.id, bidTeamId, amount)
       await refreshUser()
       if (pendingBid && result.resolved) {
         if (result.resolved.tie) {
-          addNotification('Tie bid! Both players must re-bid.', 'warning')
+          addNotification('Same bid from both of you. Bid again.', 'warning')
         } else {
-          addNotification(`🔨 ${result.resolved.winnerName} won the bid for ${result.resolved.amount} cr!`, 'success')
+          addNotification(`${result.resolved.winnerName} won the bid for ${result.resolved.amount} credits`, 'success')
           setShowBidModal(false)
           setBidAmounts({})
         }
       } else {
-        addNotification(`Bid submitted for this ${roundSeconds}-second round.`, 'info')
+        addNotification(`Bid of ${amount} placed`, 'info')
         setShowBidModal(false)
       }
     } catch (err) {
-      setBidError(err.response?.data?.error || 'Bid failed')
+      setBidError(err.response?.data?.error || "Your bid didn't go through.")
     } finally { setLoading('') }
   }
 
@@ -149,271 +142,204 @@ export default function AuctionPage() {
       await finalizeAuction(session.session.id)
       navigate('/game/dashboard')
     } catch (err) {
-      addNotification(err.response?.data?.error || 'Failed to finalize', 'danger')
+      addNotification(err.response?.data?.error || "Couldn't start the season", 'danger')
     } finally { setLoading('') }
   }
 
+  const quickBids = bidTeamId
+    ? [...new Set([getTeam(bidTeamId).basePrice, getTeam(bidTeamId).basePrice + 5, getTeam(bidTeamId).basePrice + 10, myCredits])]
+        .filter(v => v >= 1 && v <= myCredits)
+    : []
+
   return (
-    <div className="min-h-screen w-full bg-cricket-pattern px-3 sm:px-4 py-6 sm:py-8" style={{ background: '#0A1628' }}>
-      <div className="max-w-6xl mx-auto animate-fade-in">
+    <div className="max-w-6xl mx-auto px-4 py-8 fade-in">
+      <PageHeader
+        eyebrow={`Game ${session.session.inviteCode} · auction`}
+        title={title}
+        actions={auctionComplete && (
+          <button className="btn-primary py-3 px-5" onClick={handleFinalize} disabled={loading === 'finalize'}>
+            {loading === 'finalize' ? <Spinner size="sm" label="Starting season" /> : <><Play size={18} aria-hidden="true" />Start the season</>}
+          </button>
+        )}
+      >
+        {!bothPlayersReady
+          ? 'Send your opponent the code below. The auction starts when they join.'
+          : !myPlayer?.homeTeam
+            ? 'Pick one team for free before the bidding starts. If you both pick the same team, you bid for it.'
+            : `Teams come up one at a time for ${roundSeconds} seconds. Both of you bid in secret; the highest bid wins.`}
+      </PageHeader>
 
-        {/* Header */}
-        <div className="flex items-start justify-between flex-wrap gap-4 mb-6">
-          <div>
-            <SectionTitle className="text-3xl">🔨 Team Auction</SectionTitle>
-            <p className="text-gray-400 text-sm mt-1">Pick home teams first, then one team is auctioned every {roundSeconds} seconds for both managers.</p>
+      {!bothPlayersReady && <div className="max-w-md mb-8"><InviteCodeBox code={session.session.inviteCode} /></div>}
+
+      {/* On the block */}
+      {pendingBid && (
+        <section className="card border-accent/50 p-5 mb-8 flex flex-wrap items-center gap-5" aria-label="Bidding war">
+          <TeamChip teamId={pendingBid} size="lg" />
+          <div className="flex-1 min-w-[12rem]">
+            <div className="eyebrow text-accent">Bidding war</div>
+            <div className="display text-2xl">{getTeam(pendingBid).name}</div>
+            <p className="text-sm text-ink-2">You both picked it as your home team. The higher bid gets it.</p>
           </div>
-          {auctionComplete && (
-            <button className="btn-gold px-6 py-3 text-base" onClick={handleFinalize} disabled={loading === 'finalize'}>
-              {loading === 'finalize' ? <Spinner size="sm" /> : '🚀 Finalize & Start Season →'}
+          <button className="btn-primary py-3 px-5" onClick={() => setShowBidModal(true)}>
+            <Gavel size={18} aria-hidden="true" />Place bid
+          </button>
+        </section>
+      )}
+
+      {isRunning && (
+        <section className="card p-5 mb-8" aria-label="Team up for auction">
+          <div className="flex flex-wrap items-center gap-5">
+            <TeamChip teamId={activeTeamId} size="lg" />
+            <div className="flex-1 min-w-[12rem]">
+              <div className="flex items-center gap-2 eyebrow">
+                <span className="live-dot w-2 h-2 rounded-full bg-accent" aria-hidden="true" />On the block
+              </div>
+              <div className="display text-2xl">{getTeam(activeTeamId).name}</div>
+              <p className="text-sm text-ink-2">Base price {getTeam(activeTeamId).basePrice} credits</p>
+            </div>
+            <div className="text-right">
+              <div className="eyebrow">Time left</div>
+              <div className={`score text-5xl ${secondsLeft <= 5 ? 'text-accent' : ''}`} aria-live="off">{secondsLeft}<span className="text-2xl text-muted">s</span></div>
+            </div>
+            <button className="btn-primary py-3 px-5 w-full sm:w-auto" onClick={() => setShowBidModal(true)} disabled={squadFull}>
+              <Gavel size={18} aria-hidden="true" />{squadFull ? 'Your squad is full' : 'Place bid'}
             </button>
-          )}
-        </div>
-
-        {/* Waiting for opponent */}
-        {!bothPlayersReady && (
-          <div className="mb-6">
-            <Alert type="warning">
-              ⏳ Waiting for your opponent to join. Share the invite code below:
-            </Alert>
-            <div className="mt-3">
-              <InviteCodeBox code={session.session.inviteCode} />
-            </div>
           </div>
-        )}
-
-        {/* Bidding war banner */}
-        {pendingBid && (
-          <div
-            className="mb-6 rounded-2xl p-5 border-2 border-orange-400/60"
-            style={{ background: 'rgba(255,107,53,0.08)', boxShadow: '0 0 20px rgba(255,107,53,0.15)' }}
-          >
-            <div className="flex items-center gap-4 flex-wrap">
-              <TeamBadge teamId={pendingBid} size="lg" />
-              <div className="flex-1">
-                <div className="font-teko text-orange-400 text-3xl uppercase tracking-wider">⚔️ Bidding War!</div>
-                <div className="text-gray-300 text-sm">Both managers want <strong className="text-white">{getTeam(pendingBid).name}</strong>. Highest bid wins!</div>
-              </div>
-              <button className="btn-danger px-6 py-3" onClick={() => setShowBidModal(true)}>
-                Place Bid
-              </button>
-            </div>
+          <div className="h-1 bg-inset rounded-full mt-5 overflow-hidden" aria-hidden="true">
+            <div className="h-full bg-accent transition-[width] duration-1000 ease-linear" style={{ width: `${(secondsLeft / roundSeconds) * 100}%` }} />
           </div>
-        )}
+        </section>
+      )}
 
-        {!pendingBid && auction?.status === 'running' && activeTeamId && (
-          <div
-            className="mb-6 rounded-2xl p-5 border-2 border-yellow-400/50"
-            style={{ background: 'rgba(255,215,0,0.06)', boxShadow: '0 0 20px rgba(255,215,0,0.12)' }}
-          >
-            <div className="flex items-center gap-4 flex-wrap">
-              <TeamBadge teamId={activeTeamId} size="lg" />
-              <div className="flex-1">
-                <div className="font-teko text-yellow-400 text-3xl uppercase tracking-wider">Active Team: {getTeam(activeTeamId).short}</div>
-                <div className="text-gray-300 text-sm">{getTeam(activeTeamId).name} is live now. Both managers can submit bids before time ends.</div>
-              </div>
-              <div className="text-right">
-                <div className="text-gray-400 text-xs uppercase tracking-wider">Round Timer</div>
-                <div className="font-teko text-4xl text-white leading-none">{secondsLeft}s</div>
-                <button className="btn-danger px-6 py-2 mt-2" onClick={() => setShowBidModal(true)}>
-                  Place Bid
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Squad status */}
-        <div className="grid sm:grid-cols-2 gap-4 mb-8">
-          {[myPlayer, opponent].map((p, idx) => {
-            if (!p) return (
-              <div key={idx} className="card p-5 opacity-40">
-                <div className="text-gray-500 text-center py-4">Waiting for opponent...</div>
-              </div>
-            )
-            const isMe = p.id === user?.id
-            return (
-              <div key={p.id} className={`card p-5 ${isMe ? 'border-yellow-400/50' : ''}`}>
-                <div className="flex items-center justify-between mb-4">
-                  <div className="flex items-center gap-3">
-                    <div
-                      className="w-10 h-10 rounded-full flex items-center justify-center font-teko font-bold text-lg"
-                      style={{ background: isMe ? 'linear-gradient(135deg,#FFD700,#FF6B35)' : 'rgba(255,255,255,0.1)', color: isMe ? '#0A1628' : '#fff' }}
-                    >
-                      {p.username[0].toUpperCase()}
-                    </div>
-                    <div>
-                      <div className="font-bold text-sm">{p.username}</div>
-                      {isMe && <div className="text-yellow-400 text-xs">YOU</div>}
-                    </div>
-                  </div>
-                  <div className="flex gap-2">
-                    <span className="badge badge-blue">💰 {p.credits ?? myCredits}cr</span>
-                    <span className="badge badge-gold">{p.teams?.length || 0}/{MAX_TEAMS}</span>
+      {/* Managers */}
+      <div className="grid md:grid-cols-2 gap-4 mb-10">
+        {[myPlayer, opponent].map((p, idx) => {
+          if (!p) return (
+            <div key={idx} className="card p-5 border-dashed flex items-center justify-center text-muted min-h-[9rem]">Waiting for opponent…</div>
+          )
+          const isMe = p.id === user?.id
+          const credits = p.credits ?? STARTING_CREDITS
+          return (
+            <section key={p.id} className="card p-5" aria-label={isMe ? 'Your squad' : `${p.username}'s squad`}>
+              <div className="flex items-center justify-between gap-3 mb-4">
+                <div className="flex items-center gap-3 min-w-0">
+                  <Avatar name={p.username} highlight={isMe} />
+                  <div className="min-w-0">
+                    <div className="font-medium truncate">{p.username}</div>
+                    <div className="eyebrow">{isMe ? 'You' : 'Opponent'} · {p.teams?.length || 0} of {MAX_TEAMS} teams</div>
                   </div>
                 </div>
-
-                {/* Team slots */}
-                <div className="flex flex-wrap gap-2">
-                  {(p.teams || []).map(t => (
-                    <div key={t.teamId} className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold" style={{ background: `${getTeam(t.teamId).bg}`, border: `1px solid ${getTeam(t.teamId).color}50` }}>
-                      <TeamBadge teamId={t.teamId} size="sm" />
-                      <span style={{ color: getTeam(t.teamId).color }}>{getTeam(t.teamId).short}</span>
-                      {t.isHome && <span className="text-yellow-400">🏠</span>}
-                    </div>
-                  ))}
-                  {Array(MAX_TEAMS - (p.teams?.length || 0)).fill(0).map((_, i) => (
-                    <div key={i} className="w-10 h-10 rounded-lg border border-dashed border-white/15 flex items-center justify-center text-gray-600 text-lg">?</div>
-                  ))}
-                </div>
-
-                {/* Budget bar */}
-                <div className="mt-4">
-                  <div className="flex justify-between text-xs text-gray-500 mb-1">
-                    <span>Budget used</span>
-                    <span>{STARTING_CREDITS - (p.credits ?? myCredits)} / {STARTING_CREDITS} cr</span>
-                  </div>
-                  <div className="w-full bg-white/10 rounded-full h-1.5">
-                    <div
-                      className="h-1.5 rounded-full bg-gradient-to-r from-yellow-400 to-orange-400 transition-all duration-500"
-                      style={{ width: `${((STARTING_CREDITS - (p.credits ?? myCredits)) / STARTING_CREDITS) * 100}%` }}
-                    />
-                  </div>
+                <div className="text-right">
+                  <div className="score text-3xl">{credits}</div>
+                  <div className="eyebrow">credits left</div>
                 </div>
               </div>
-            )
-          })}
-        </div>
-
-        {/* Teams grid */}
-        <SectionTitle className="text-xl mb-4">Available Teams</SectionTitle>
-
-        {!myPlayer?.homeTeam && (
-          <Alert type="info" className="mb-4">
-            🏠 <strong>Select your Home Team first</strong> before auction starts. If both select the same team, a bidding war resolves it.
-          </Alert>
-        )}
-
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
-          {IPL_TEAMS.map(team => {
-            const ownedByMe = myTeamIds.includes(team.id)
-            const ownedByOpp = opponentTeamIds.includes(team.id)
-            const owned = ownedByMe || ownedByOpp
-            const ownerName = ownedByOpp ? opponent?.username : ''
-            const squadFull = myTeamIds.length >= MAX_TEAMS
-            const isLoading = loading === `home_${team.id}`
-            const isActiveRoundTeam = team.id === activeTeamId
-
-            return (
-              <div
-                key={team.id}
-                className={`rounded-xl p-3 border transition-all duration-200 ${!owned ? 'hover:-translate-y-1' : 'opacity-60'}`}
-                style={{
-                  background: owned ? 'rgba(255,255,255,0.03)' : `${team.bg}33`,
-                  borderColor: ownedByMe ? team.color + 'aa' : owned ? 'rgba(255,255,255,0.08)' : team.color + '40',
-                }}
-              >
-                <div className="flex flex-col items-center gap-2 mb-3">
-                  <TeamBadge teamId={team.id} size="md" />
-                  <div className="text-center">
-                    <div className="font-bold text-xs leading-tight">{team.name}</div>
-                      <div className="font-teko text-yellow-400">{team.basePrice}cr</div>
-                  </div>
-                </div>
-
-                {owned ? (
-                  <div className="text-center">
-                    {ownedByMe
-                      ? <span className="badge badge-gold text-xs">✓ YOURS</span>
-                      : <span className="badge badge-red text-xs">✗ {ownerName}</span>
-                    }
-                  </div>
-                ) : isLoading ? (
-                  <div className="flex justify-center"><Spinner size="sm" /></div>
-                ) : (
-                  <div className="flex flex-col gap-1.5">
-                    {!myPlayer?.homeTeam && (
-                      <button
-                        className="btn-outline py-1 px-2 text-xs w-full"
-                        onClick={() => handleHomeTeam(team.id)}
-                        disabled={squadFull}
-                      >
-                        🏠 Free
-                      </button>
-                    )}
-                    {myPlayer?.homeTeam && (
-                      <button
-                        className={`${isActiveRoundTeam && !pendingBid ? 'btn-danger' : 'btn-outline'} py-1 px-2 text-xs w-full`}
-                        onClick={() => setShowBidModal(true)}
-                        disabled={!isActiveRoundTeam || !!pendingBid || squadFull || auction?.status !== 'running'}
-                        title={isActiveRoundTeam ? 'Bid for active team' : 'Waiting for this team\'s turn'}
-                      >
-                        {isActiveRoundTeam ? '🔨 Bid Now' : 'Waiting Turn'}
-                      </button>
-                    )}
-                  </div>
-                )}
+              <ul className="flex flex-wrap gap-2" aria-label="Teams">
+                {(p.teams || []).map(t => (
+                  <li key={t.teamId} className="flex items-center gap-1">
+                    <TeamChip teamId={t.teamId} />
+                    {t.isHome && <Home size={14} className="text-muted" aria-label="Home team" />}
+                  </li>
+                ))}
+                {Array(Math.max(0, MAX_TEAMS - (p.teams?.length || 0))).fill(0).map((_, i) => (
+                  <li key={`empty-${i}`} className="h-8 w-12 rounded border border-dashed border-line" aria-hidden="true" />
+                ))}
+              </ul>
+              <div className="h-1 bg-inset rounded-full mt-4 overflow-hidden" aria-hidden="true">
+                <div className="h-full bg-ink-2 transition-all duration-500" style={{ width: `${(credits / STARTING_CREDITS) * 100}%` }} />
               </div>
-            )
-          })}
-        </div>
-
-        {/* Auction log */}
-        {auctionLog.length > 0 && (
-          <div className="mt-8">
-            <SectionTitle className="text-lg mb-3">📋 Auction Log</SectionTitle>
-            <div className="card p-4 max-h-48 overflow-y-auto">
-              {auctionLog.map((log, i) => (
-                <div key={i} className="py-1.5 border-b border-white/5 text-sm text-gray-400 last:border-0">
-                  <span className="text-yellow-400 mr-2 font-teko">{auctionLog.length - i}.</span>
-                  {log}
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
+            </section>
+          )
+        })}
       </div>
 
-      {/* Bid modal */}
-      <Modal open={showBidModal && !!bidTeamId} onClose={() => setShowBidModal(false)} title={`⚔️ Bid for ${getTeam(bidTeamId || '')?.name}`}>
+      {/* Teams */}
+      <SectionHeading aside={`${IPL_TEAMS.filter(t => !myTeamIds.includes(t.id) && !opponentTeamIds.includes(t.id)).length} unsold`}>All teams</SectionHeading>
+      <ul className="card divide-rows mb-10">
+        {IPL_TEAMS.map(team => {
+          const ownedByMe = myTeamIds.includes(team.id)
+          const ownedByOpp = opponentTeamIds.includes(team.id)
+          const isActive = team.id === activeTeamId && isRunning
+          const isLoading = loading === `home_${team.id}`
+          return (
+            <li key={team.id} className={`flex items-center gap-3 px-4 py-2.5 ${isActive ? 'bg-accent/5' : ''}`}>
+              <TeamChip teamId={team.id} />
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium truncate">{team.name}</div>
+                <div className="eyebrow">Base {team.basePrice} credits</div>
+              </div>
+              {ownedByMe ? <span className="tag-win">Yours</span>
+                : ownedByOpp ? <span className="tag-neutral">{opponent?.username}</span>
+                : isLoading ? <Spinner size="sm" />
+                : bothPlayersReady && !myPlayer?.homeTeam && !pendingBid ? (
+                  <button className="btn-secondary btn-sm" onClick={() => handleHomeTeam(team.id)}>
+                    <Home size={14} aria-hidden="true" />Pick as home
+                  </button>
+                )
+                : isActive ? <span className="tag-accent">On the block</span>
+                : <span className="text-xs text-muted">Waiting</span>}
+            </li>
+          )
+        })}
+      </ul>
+
+      {auctionLog.length > 0 && (
+        <section aria-labelledby="log-heading">
+          <SectionHeading id="log-heading">Auction log</SectionHeading>
+          <ol className="card divide-rows max-h-56 overflow-y-auto text-sm">
+            {auctionLog.map((log, i) => (
+              <li key={i} className="flex gap-3 px-4 py-2">
+                <span className="score text-muted w-6 text-right">{auctionLog.length - i}</span>
+                <span className="text-ink-2">{log}</span>
+              </li>
+            ))}
+          </ol>
+        </section>
+      )}
+
+      <Modal open={showBidModal && !!bidTeamId} onClose={() => setShowBidModal(false)} title={`Bid for ${getTeam(bidTeamId || '').short}`}>
         {bidTeamId && (
-          <div>
-            <div className="flex items-center gap-4 mb-6 p-4 rounded-xl bg-white/5">
-              <TeamBadge teamId={bidTeamId} size="lg" />
-              <div>
-                <div className="font-bold text-lg">{getTeam(bidTeamId).name}</div>
-                <div className="text-gray-400 text-sm">Base price: {getTeam(bidTeamId).basePrice} cr</div>
-                <div className="text-yellow-400 text-sm">Your budget: {myCredits} cr</div>
-                {!pendingBid && roundEndsAt && <div className="text-orange-400 text-sm">Time left: {secondsLeft}s</div>}
+          <form onSubmit={e => { e.preventDefault(); handleBid() }}>
+            <div className="flex items-center gap-4 mb-5">
+              <TeamChip teamId={bidTeamId} size="lg" />
+              <div className="text-sm">
+                <div className="font-medium text-base">{getTeam(bidTeamId).name}</div>
+                <div className="text-ink-2">Base {getTeam(bidTeamId).basePrice} · you have {myCredits} credits</div>
+                {!pendingBid && roundEndsAt && <div className="text-accent">{secondsLeft} seconds left</div>}
               </div>
             </div>
 
             {bidError && <Alert type="danger" className="mb-4">{bidError}</Alert>}
 
-            <div className="mb-4">
-              <label className="block text-gray-400 text-xs uppercase tracking-widest mb-2">Your Bid (cr)</label>
-              <input
-                className="input-field text-2xl font-teko"
-                type="number"
-                min={1}
-                max={myCredits}
-                placeholder={`Min: 1, Max: ${myCredits}`}
-                value={bidAmounts[bidTeamId] || ''}
-                onChange={e => setBidAmounts(p => ({ ...p, [bidTeamId]: e.target.value }))}
-              />
+            <label className="label" htmlFor="bid-amount">Your bid (credits)</label>
+            <input
+              id="bid-amount"
+              className="input score text-3xl"
+              type="number"
+              inputMode="numeric"
+              min={1}
+              max={myCredits}
+              value={bidAmounts[bidTeamId] || ''}
+              onChange={e => setBidAmounts(p => ({ ...p, [bidTeamId]: e.target.value }))}
+              autoFocus
+            />
+            <div className="flex flex-wrap gap-2 mt-2" aria-label="Quick amounts">
+              {quickBids.map(v => (
+                <button type="button" key={v} className="btn-secondary btn-sm score" onClick={() => setBidAmounts(p => ({ ...p, [bidTeamId]: String(v) }))}>
+                  {v === myCredits ? `All ${v}` : v}
+                </button>
+              ))}
             </div>
 
-            <Alert type="info" className="mb-5">
-              Both managers bid simultaneously for the active team. Highest bid at timer end wins.
-            </Alert>
+            <p className="text-sm text-ink-2 my-5">Your opponent can't see your bid. Highest bid when the timer ends wins; you only pay if you win.</p>
 
             <div className="flex gap-3">
-              <button className="btn-outline flex-1 py-3" onClick={() => setShowBidModal(false)}>Cancel</button>
-              <button className="btn-danger flex-1 py-3" onClick={handleBid} disabled={loading === 'bid'}>
-                {loading === 'bid' ? <Spinner size="sm" /> : '🔨 Submit Bid'}
+              <button type="button" className="btn-secondary flex-1 py-3" onClick={() => setShowBidModal(false)}>Cancel</button>
+              <button type="submit" className="btn-primary flex-1 py-3" disabled={loading === 'bid'}>
+                {loading === 'bid' ? <Spinner size="sm" label="Placing bid" /> : 'Place bid'}
               </button>
             </div>
-          </div>
+          </form>
         )}
       </Modal>
     </div>

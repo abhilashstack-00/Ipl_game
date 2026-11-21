@@ -385,7 +385,7 @@ const applyMatchResultToSession = db.transaction(function applyMatchResultTx({ s
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(uuidv4(), sessionId, match.id, winnerTeam, loserTeam, winnerId, loserId, pointsW, pointsL, isDraw ? 1 : 0);
 
-  return { ok: true, isDraw, matchId: match.id, winnerUserId: isDraw ? null : winnerId, winnerTeam, pointsW };
+  return { ok: true, isDraw, matchId: match.id, winnerUserId: isDraw ? null : winnerId, winnerTeam, loserTeam, pointsW };
 });
 
 function extractOutcome(match) {
@@ -605,8 +605,8 @@ router.post('/home-team', authMiddleware, requireSessionMember({ allowedStatuses
       type: result.conflict ? 'bid-war-started' : 'home-team-selected',
       teamId, userId: req.user.id, username,
       message: result.conflict
-        ? `⚔️ Both players want ${teamShort(teamId)}! Bidding war begins!`
-        : `${username} selected ${teamShort(teamId)} as home team (FREE)`,
+        ? `Both players want ${teamShort(teamId)}. Bidding war.`
+        : `${username} picked ${teamShort(teamId)} as their free home team`,
     });
     res.json({ session: getSessionState(sessionId, req.user.id), conflict: result.conflict });
   } catch (err) {
@@ -754,8 +754,8 @@ router.post('/debug/seed-session', authMiddleware, requireTestHelper, requireSes
 function announceAppliedResults(req, sessionId, applied) {
   for (const r of applied) {
     const message = r.isDraw
-      ? `🤝 Match ${r.matchId} drawn: both players earn 1 point`
-      : `🏆 ${usernameOf(r.winnerUserId)} earns ${r.pointsW} points (${teamShort(r.winnerTeam)} won)`;
+      ? `${teamShort(r.winnerTeam)} v ${teamShort(r.loserTeam)} ended without a winner: 1 point each`
+      : `${teamShort(r.winnerTeam)} won: ${usernameOf(r.winnerUserId)} gets ${r.pointsW} points`;
     broadcast(req, sessionId, 'match-result', {
       matchId: r.matchId,
       winnerName: r.isDraw ? null : usernameOf(r.winnerUserId),
@@ -988,17 +988,6 @@ router.post('/admin/match-result', authMiddleware, requireAdmin, allowFields(['m
     console.log(`[admin] ${req.user.username} set result for ${matchId}: ${draw ? 'draw' : winnerTeamId}`);
     // Sessions apply it on their next /matches fetch (the Matches page polls every 5s).
     res.json({ ok: true, matchId, result: draw ? { isDraw: true } : { winner: winnerTeamId } });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Server error' });
-  }
-});
-
-// GET /api/game/leaderboard
-router.get('/leaderboard', authMiddleware, (req, res) => {
-  try {
-    const users = db.prepare('SELECT id, username, points, wins, losses, draws, matches_played, credits FROM users ORDER BY points DESC, wins DESC').all();
-    res.json({ leaderboard: users });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });

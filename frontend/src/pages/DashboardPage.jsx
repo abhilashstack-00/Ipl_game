@@ -1,14 +1,18 @@
-import React, { useEffect } from 'react'
+import React, { useEffect, useState } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
+import { ArrowRight, CalendarDays, Home } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { useGame } from '../context/GameContext'
-import { TeamBadge, StatBox, ProgressBar, SectionTitle } from '../components/UI'
+import { TeamChip, ScoreStrip, Stat, EmptyState, SectionHeading, Alert } from '../components/UI'
+import { MatchRow, SidePicker } from '../components/MatchBits'
 import { getTeam } from '../utils/iplData'
+import { counts, formatDate, matchState, sessionScore, sideOwners, canPickSide } from '../utils/matches'
 
 export default function DashboardPage() {
   const { user } = useAuth()
-  const { session, matches, fetchMatches } = useGame()
+  const { session, matches, fetchMatches, chooseSide, addNotification } = useGame()
   const navigate = useNavigate()
+  const [picking, setPicking] = useState('')
 
   useEffect(() => {
     if (!session) navigate('/lobby')
@@ -18,184 +22,159 @@ export default function DashboardPage() {
 
   if (!session) return null
 
-  const myPlayer = session.players?.find(p => p.id === user?.id)
-  const opponent = session.players?.find(p => p.id !== user?.id)
-  const myTeams = myPlayer?.teams?.map(t => t.teamId) || []
+  const myId = user?.id
+  const me = session.players?.find(p => p.id === myId)
+  const opponent = session.players?.find(p => p.id !== myId)
+  const oppName = opponent?.username || 'Opponent'
+  const all = matches || []
+  const score = sessionScore(all, myId)
 
-  const upcomingMyMatches = (matches || []).filter(m =>
-    !m.result && !m.processed && (myTeams.includes(m.team1) || myTeams.includes(m.team2))
-  ).slice(0, 4)
+  const upcomingContests = all.filter(m => counts(m) && ['upcoming', 'today'].includes(matchState(m)))
+  const seasonOver = all.length > 0 && !all.some(m => ['upcoming', 'today'].includes(matchState(m)))
+  const awaitingCount = all.filter(m => counts(m) && matchState(m) === 'awaiting').length
+  const next = upcomingContests[0]
+  const needChoice = all.filter(m => canPickSide(m, myId) && !m.matchChoice)
+  const recent = all.filter(m => counts(m) && m.processed).slice(-5).reverse()
 
-  const contestMatches = (matches || []).filter(m => m.isContest && !m.processed).slice(0, 3)
-  const completedMatches = (matches || []).filter(m => m.result || m.processed).slice(-5).reverse()
+  const handlePick = async (match, teamId) => {
+    setPicking(match.id)
+    try {
+      await chooseSide(session.session.id, match.id, teamId)
+      addNotification(`You play as ${getTeam(teamId).short}; ${oppName} gets the other side`, 'success')
+    } catch (err) {
+      addNotification(err.response?.data?.error || "Couldn't save your side", 'danger')
+    } finally { setPicking('') }
+  }
 
-  const totalPts = (myPlayer?.points || 0) + (opponent?.points || 0)
+  const teamRecord = (teamId) => {
+    const played = all.filter(m => (m.team1 === teamId || m.team2 === teamId) && m.result && !m.result.isDraw)
+    const w = played.filter(m => m.result.winner === teamId).length
+    return `${w}–${played.length - w}`
+  }
+
+  let nextSides = null
+  if (next) {
+    const owners = sideOwners(next)
+    const mine = [next.team1, next.team2].find(t => owners[t] === myId)
+    const theirs = [next.team1, next.team2].find(t => owners[t] && owners[t] !== myId)
+    nextSides = { mine, theirs, needsChoice: owners.needsChoice }
+  }
 
   return (
-    <div className="max-w-6xl mx-auto px-4 py-8 animate-fade-in">
+    <div className="max-w-6xl mx-auto px-4 py-6 sm:py-8 fade-in">
+      <ScoreStrip me={me} opponent={opponent} mine={score.me} theirs={score.them} className="mb-6" />
 
-      {/* Scoreboard hero */}
-      <div
-        className="rounded-2xl p-6 mb-8 relative overflow-hidden"
-        style={{
-          background: 'linear-gradient(135deg, rgba(255,215,0,0.06) 0%, rgba(255,107,53,0.04) 100%)',
-          border: '1px solid rgba(255,215,0,0.3)',
-          boxShadow: '0 8px 30px rgba(255,215,0,0.07)',
-        }}
-      >
-        <div className="text-center mb-1">
-          <div className="font-teko text-gray-400 text-sm uppercase tracking-widest">Season Standings</div>
-        </div>
-        <div className="grid grid-cols-3 items-center gap-4">
-          {/* Player 1 */}
-          <div className="text-center">
-            <div className={`font-teko text-6xl font-bold ${myPlayer?.id === user?.id ? 'text-yellow-400' : 'text-cyan-400'}`}
-              style={{ textShadow: myPlayer?.id === user?.id ? '0 0 20px rgba(255,215,0,0.4)' : '' }}>
-              {myPlayer?.points ?? 0}
-            </div>
-            <div className="font-bold text-sm mt-1">{myPlayer?.username}</div>
-            <div className="text-xs text-yellow-400 mt-0.5">YOU</div>
-            <div className="flex justify-center gap-3 mt-2 text-xs">
-              <span className="text-green-400">W:{myPlayer?.wins ?? 0}</span>
-              <span className="text-red-400">L:{myPlayer?.losses ?? 0}</span>
-              <span className="text-gray-400">D:{myPlayer?.draws ?? 0}</span>
-            </div>
+      {needChoice.length > 0 && (
+        <Alert type="warning" className="mb-6">
+          <div className="font-medium mb-2">
+            You own both teams in {needChoice.length === 1 ? 'a match' : `${needChoice.length} matches`}. Pick the side you play before match day, or it won't score.
           </div>
-
-          {/* VS */}
-          <div className="text-center">
-            <div className="font-teko text-4xl text-gray-600">VS</div>
-            <div className="mt-2">
-              <ProgressBar
-                value={myPlayer?.points ?? 0}
-                max={Math.max(totalPts, 1)}
-                color="from-yellow-400 to-orange-400"
-              />
-            </div>
-            <div className="text-xs text-gray-500 mt-1">{totalPts} pts played</div>
-          </div>
-
-          {/* Opponent */}
-          <div className="text-center">
-            <div className="font-teko text-6xl font-bold text-cyan-400">
-              {opponent?.points ?? 0}
-            </div>
-            <div className="font-bold text-sm mt-1">{opponent?.username || 'Opponent'}</div>
-            <div className="text-xs text-cyan-400 mt-0.5">OPPONENT</div>
-            <div className="flex justify-center gap-3 mt-2 text-xs">
-              <span className="text-green-400">W:{opponent?.wins ?? 0}</span>
-              <span className="text-red-400">L:{opponent?.losses ?? 0}</span>
-              <span className="text-gray-400">D:{opponent?.draws ?? 0}</span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Stats row */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-8">
-        <StatBox label="My Points" value={myPlayer?.points ?? 0} />
-        <StatBox
-          label="Win Rate"
-          value={myPlayer?.matches_played > 0 ? `${Math.round((myPlayer.wins / myPlayer.matches_played) * 100)}%` : '—'}
-          color="text-green-400"
-        />
-        <StatBox label="Teams Owned" value={`${myTeams.length}/5`} color="text-cyan-400" />
-        <StatBox label="CR Left" value={`${myPlayer?.credits ?? 0}`} color="text-orange-400" sub="session" />
-      </div>
-
-      <div className="grid sm:grid-cols-2 gap-6">
-        {/* My squad */}
-        <div>
-          <SectionTitle className="text-xl mb-3">🏏 My Squad</SectionTitle>
-          <div className="card p-4 space-y-2">
-            {myTeams.length === 0 ? (
-              <div className="text-gray-500 text-center py-6">No teams — complete the auction first!</div>
-            ) : myTeams.map(tid => {
-              const t = getTeam(tid)
-              const teamMatches = (matches || []).filter(m => m.team1 === tid || m.team2 === tid)
-              const wins = teamMatches.filter(m => m.result?.winner === tid || (m.processed && m.winner_team === tid)).length
-              const played = teamMatches.filter(m => m.result || m.processed).length
-              return (
-                <div key={tid} className="flex items-center gap-3 p-2.5 rounded-xl hover:bg-white/5 transition-colors"
-                  style={{ border: `1px solid ${t.color}20` }}>
-                  <TeamBadge teamId={tid} size="sm" />
-                  <div className="flex-1 min-w-0">
-                    <div className="font-bold text-sm truncate">{t.name}</div>
-                    <div className="text-xs text-gray-500">{wins}W / {played - wins}L in {played} matches</div>
-                  </div>
-                  <div className="font-teko text-lg" style={{ color: t.color }}>{t.short}</div>
-                </div>
-              )
-            })}
-          </div>
-        </div>
-
-        {/* Live contests */}
-        <div>
-          <SectionTitle className="text-xl mb-3">⚔️ Active Contests</SectionTitle>
-          {contestMatches.length === 0 ? (
-            <div className="card p-8 text-center text-gray-500">
-              <div className="text-4xl mb-2">📅</div>
-              <div>No active contests right now</div>
-              <Link to="/game/matches" className="text-yellow-400 text-sm hover:underline mt-2 block">View full schedule →</Link>
-            </div>
-          ) : contestMatches.map(m => (
-            <div key={m.id} className="card p-4 mb-3" style={{ borderColor: 'rgba(255,107,53,0.4)' }}>
-              <div className="flex items-center gap-3">
-                <TeamBadge teamId={m.team1} size="sm" />
-                <div className="flex-1 text-center">
-                  <div className="font-teko text-gray-400">vs</div>
-                  <div className="text-xs text-gray-500">{m.date}</div>
-                </div>
-                <TeamBadge teamId={m.team2} size="sm" />
-              </div>
-              <div className="mt-2 flex justify-between items-center text-xs">
-                <span className="text-orange-400">⚔️ Contest match</span>
-                <Link to="/game/matches" className="badge badge-gold">Manage →</Link>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* Recent results */}
-      {completedMatches.length > 0 && (
-        <div className="mt-8">
-          <SectionTitle className="text-xl mb-3">📋 Recent Results</SectionTitle>
-          <div className="card overflow-hidden">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-white/10">
-                  <th className="text-left px-4 py-3 text-gray-500 text-xs uppercase tracking-wider">Match</th>
-                  <th className="text-left px-4 py-3 text-gray-500 text-xs uppercase tracking-wider">Date</th>
-                  <th className="text-left px-4 py-3 text-gray-500 text-xs uppercase tracking-wider">Venue</th>
-                  <th className="text-left px-4 py-3 text-gray-500 text-xs uppercase tracking-wider">Result</th>
-                </tr>
-              </thead>
-              <tbody>
-                {completedMatches.map(m => (
-                  <tr key={m.id} className="border-b border-white/5 hover:bg-white/3 transition-colors">
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-2">
-                        <TeamBadge teamId={m.team1} size="sm" />
-                        <span className="text-gray-500 text-xs">vs</span>
-                        <TeamBadge teamId={m.team2} size="sm" />
-                      </div>
-                    </td>
-                    <td className="px-4 py-3 text-gray-400 text-xs">{m.date}</td>
-                    <td className="px-4 py-3 text-gray-500 text-xs truncate max-w-[150px]">{m.venue}</td>
-                    <td className="px-4 py-3">
-                      {m.result?.winner && (
-                        <span className="badge badge-green">{getTeam(m.result.winner).short} Won</span>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
+          <ul className="space-y-2">
+            {needChoice.slice(0, 3).map(m => (
+              <li key={m.id} className="flex flex-wrap items-center gap-3">
+                <span className="text-sm text-ink-2 w-24">{formatDate(m.date)}</span>
+                <SidePicker match={m} onPick={handlePick} busy={picking === m.id} />
+              </li>
+            ))}
+          </ul>
+        </Alert>
       )}
+
+      <div className="grid lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)] gap-6">
+        <div className="space-y-6 min-w-0">
+          {/* Next contest */}
+          <section className="card p-5" aria-labelledby="next-heading">
+            <div className="flex items-center justify-between gap-3 mb-4">
+              <h2 id="next-heading" className="eyebrow">Next contest</h2>
+              {next && <span className={matchState(next) === 'today' ? 'tag-accent' : 'tag-neutral'}>{matchState(next) === 'today' ? 'Today' : formatDate(next.date)}</span>}
+            </div>
+            {next ? (
+              <>
+                <div className="flex items-center gap-4">
+                  <TeamChip teamId={next.team1} size="lg" />
+                  <span className="display text-xl text-muted">v</span>
+                  <TeamChip teamId={next.team2} size="lg" />
+                </div>
+                <p className="mt-4 text-ink-2">
+                  {nextSides.needsChoice
+                    ? `You own both teams. Pick your side before match day.`
+                    : <>Your <strong className="text-ink">{getTeam(nextSides.mine).short}</strong> against {oppName}'s <strong className="text-ink">{getTeam(nextSides.theirs).short}</strong>. A win is worth 2 points.</>}
+                </p>
+                <p className="text-sm text-muted mt-1">{next.venue}</p>
+              </>
+            ) : (
+              <EmptyState icon={CalendarDays} title={seasonOver ? 'No fixtures left this season' : 'No more contests scheduled'}>
+                {seasonOver
+                  ? 'Every match in the schedule has been played.'
+                  : "None of the remaining fixtures put your teams against your opponent's."}
+                {awaitingCount > 0 && ` ${awaitingCount} contest${awaitingCount === 1 ? ' is' : 's are'} still waiting for an official result.`}
+              </EmptyState>
+            )}
+          </section>
+
+          {/* Upcoming */}
+          <section aria-labelledby="upcoming-heading">
+            <SectionHeading id="upcoming-heading" aside={<Link to="/game/matches" className="inline-flex items-center gap-1 text-accent hover:underline">All fixtures<ArrowRight size={14} aria-hidden="true" /></Link>}>
+              Coming up
+            </SectionHeading>
+            {upcomingContests.length > 1 ? (
+              <ul className="card divide-rows">
+                {upcomingContests.slice(1, 6).map(m => (
+                  <MatchRow key={m.id} match={m} myId={myId} opponentName={oppName} onPickSide={handlePick} picking={picking} />
+                ))}
+              </ul>
+            ) : (
+              <p className="text-sm text-muted">Nothing else scheduled between your teams.</p>
+            )}
+          </section>
+
+          {/* Recent */}
+          <section aria-labelledby="recent-heading">
+            <SectionHeading id="recent-heading">Recent results</SectionHeading>
+            {recent.length ? (
+              <ul className="card divide-rows">
+                {recent.map(m => <MatchRow key={m.id} match={m} myId={myId} opponentName={oppName} />)}
+              </ul>
+            ) : (
+              <p className="text-sm text-muted">No contests have been played yet. Results appear here automatically.</p>
+            )}
+          </section>
+        </div>
+
+        <aside className="space-y-6 min-w-0">
+          <section aria-labelledby="record-heading">
+            <SectionHeading id="record-heading">Your record</SectionHeading>
+            <div className="grid grid-cols-3 gap-2">
+              <Stat label="Won" value={score.won} tone="win" />
+              <Stat label="Lost" value={score.lost} tone="loss" />
+              <Stat label="No result" value={score.drawn} tone="draw" />
+            </div>
+          </section>
+
+          <section aria-labelledby="squad-heading">
+            <SectionHeading id="squad-heading" aside={`${me?.credits ?? 0} credits left`}>Your squad</SectionHeading>
+            <ul className="card divide-rows">
+              {(me?.teams || []).map(t => (
+                <li key={t.teamId} className="flex items-center gap-3 px-4 py-2.5">
+                  <TeamChip teamId={t.teamId} />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium truncate flex items-center gap-1.5">
+                      {getTeam(t.teamId).name}
+                      {t.isHome && <Home size={13} className="text-muted flex-shrink-0" aria-label="Home team" />}
+                    </div>
+                    <div className="eyebrow">{t.pricePaid ? `${t.pricePaid} credits` : 'Free'}</div>
+                  </div>
+                  <div className="text-right">
+                    <div className="score text-lg">{teamRecord(t.teamId)}</div>
+                    <div className="eyebrow">W–L</div>
+                  </div>
+                </li>
+              ))}
+              {!me?.teams?.length && <li className="px-4 py-6 text-sm text-muted text-center">No teams yet.</li>}
+            </ul>
+          </section>
+        </aside>
+      </div>
     </div>
   )
 }

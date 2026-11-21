@@ -7,7 +7,7 @@ Two-player IPL fantasy game. Players auction real IPL teams with virtual credits
 - Owner works on Windows.
 
 ## Stack
-- **Frontend** (`frontend/`): React 18, Vite 5, React Router 6 (HashRouter), Tailwind 3, axios, socket.io-client
+- **Frontend** (`frontend/`): React 18, Vite 5, React Router 6 (HashRouter), Tailwind 3, axios, socket.io-client, lucide-react (icons, pinned)
 - **Backend** (`backend/`): Node + Express 4, better-sqlite3 (WAL), JWT (jsonwebtoken + bcryptjs), Socket.IO 4
 - Plain JavaScript, no TypeScript. CommonJS in the backend, ES modules in the frontend.
 
@@ -31,9 +31,12 @@ Vite proxies `/api` and `/socket.io` to `localhost:3002`.
 - `backend/src/services/adminBootstrap.js`: `ADMIN_USERNAMES` env var, applied at startup and at registration
 - `backend/src/db/database.js`: schema and in-place migrations (`ALTER TABLE` guarded by `PRAGMA table_info`)
 - `backend/src/db/iplData.js`: teams and the static IPL 2026 schedule
-- `frontend/src/context/GameContext.jsx`: API calls and socket listeners
-- `frontend/src/pages/AdminPage.jsx` (`#/admin`): enter official results without being in a game. Backed by `GET /api/game/admin/matches`.
-- `frontend/src/components/UI.jsx`: shared UI. `Modal` renders through a portal because `.animate-fade-in` leaves a `transform` that breaks `position: fixed`.
+- `frontend/src/context/GameContext.jsx`: API calls and socket listeners (incl. `chooseSide` for matches where one player owns both teams)
+- `frontend/src/index.css` + `tailwind.config.js`: the two themes. Light = "scorebook", dark = "floodlight". Colours are CSS variables (`--c-*`) exposed as Tailwind colours (`bg-surface`, `text-ink`, `text-muted`, `bg-primary`, `text-accent`, `text-win/loss/draw`); fonts via `display`/`score` classes. `ThemeContext.jsx` toggles `data-theme`; `index.html` sets it before React loads.
+- `frontend/src/components/UI.jsx`: shared UI (`TeamChip`, `ScoreStrip`, `Modal` via portal, `Alert`, toasts). `MatchBits.jsx`: `MatchRow`, `SidePicker`, `PointsTag`.
+- `frontend/src/utils/matches.js`: reads match data (`sideOwners`, `pointsForMatch`, `sessionScore`). The in-game score is summed from this game's processed matches, not from `users.points`.
+- `frontend/src/components/ServerGate.jsx`: waits for `/api/health` and shows "Waking up the game server" during Render cold starts.
+- Pages: Lobby, Auction, Dashboard, Fixtures (`MatchesPage.jsx`, `#/game/matches`), Head-to-head (`#/game/h2h`), Admin (`#/admin`, backed by `GET /api/game/admin/matches`).
 - `SECURITY_AUDIT.md`: findings, fixes and the remaining assumptions
 
 ## Security rules (do not regress)
@@ -47,7 +50,7 @@ These were added after an audit. Several were exploitable before. Keep them true
 7. `ALLOW_TEST_HELPER` must stay false in production.
 
 ## Testing
-`security-tests/attack.js` runs about 34 attack and functional checks against a local server. See `security-tests/README.md`. Run it after any backend change; every line should say `SECURE`.
+`security-tests/attack.js` runs about 35 attack and functional checks against a local server. See `security-tests/README.md`. Run it after any backend change; every line should say `SECURE`.
 Use a throwaway database: `rm -rf backend/data` first, and start the server with `PORT=3101 ALLOW_TEST_HELPER=true`. Pass the same `ADMIN_USERNAMES` to the server and the harness to include the admin-bootstrap checks.
 No unit test framework yet. Adding one (e.g. `node:test` + supertest) is welcome.
 
@@ -59,14 +62,17 @@ No unit test framework yet. Adding one (e.g. `node:test` + supertest) is welcome
 ## Status (as of 21 Nov 2026)
 - The security upgrade is **live** (pushed 21 Nov 2026 as `619e531`). Render runs it with `JWT_SECRET`, `ADMIN_USERNAMES`, `FRONTEND_URLS` and `ALLOW_TEST_HELPER=false`; GitHub Pages serves the rebuilt frontend.
 - The admin page (`#/admin`) was added afterwards. The owner registers their admin account after every Render restart (the DB is wiped).
+- Redesign (21 Nov 2026): light and dark themes, new layout for every page, "pick your side" UI, server wake-up screen. Removed: the global leaderboard page and `GET /api/game/leaderboard` (it listed every account), the old Squads page (merged into Head-to-head), admin buttons and "Apply result" on the fixtures page.
+- The static schedule in `iplData.js` only covers 30 matches up to 20 Apr 2026; later fixtures come only from the live feed.
 - Next steps, in order:
   1. **Stop data loss:** Render's free-tier disk is ephemeral, so the SQLite file (accounts, games, admin roles) is wiped on restart or redeploy. Move to a hosted DB. Turso/libSQL is closest to SQLite; Supabase or Neon are Postgres options.
-  2. **Gameplay fixes:** points/wins live on `users` globally instead of per session (admin accounts also show on the leaderboard). The home-team "bidding war" path is unreachable: the first pick is assigned immediately. Either player leaving ends the session for both.
-  3. **UX:** a "waking up the server" screen for Render cold starts (30-60 s). Remove the dev instructions from the fallback text in root `index.html`. Accessibility: only the admin page, header admin link and `Modal` have aria attributes so far.
+  2. **Gameplay fixes:** points/wins live on `users` globally instead of per session (the frontend now shows per-game scores, but the backend still adds to `users`). The home-team "bidding war" path is unreachable: the first pick is assigned immediately. Either player leaving ends the session for both.
+  3. **UX:** an accessibility pass with a screen reader (labels and focus are in place; not tested with real assistive tech).
   4. Rate limiting on login and register.
   5. `npm audit` lists advisories in backend dependencies (express/body-parser, qs, socket.io/ws). Most are fixed by a non-breaking `npm audit fix`; rerun the security tests after.
 
 ## Conventions
 - Keep diffs focused. Don't rewrite unrelated code or add dependencies without a reason.
 - Match the existing style: 2-space indent, single quotes. No semicolons in the frontend; semicolons in the backend.
+- Frontend design: use the theme tokens, never raw hex (team colours in `iplData.js` are the one exception). No gradients, glows or emoji; icons come from `lucide-react`. Sentence case, not ALL CAPS (the dark theme's `display` font uppercases itself). Check both themes and a 375px-wide phone.
 - Explain changes in plain language. The owner is learning and wants to understand the reasoning.

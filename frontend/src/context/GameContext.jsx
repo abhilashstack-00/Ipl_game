@@ -163,6 +163,15 @@ export function GameProvider({ children }) {
     return r.data
   }
 
+  // When you own both teams in a match, pick the side you play; your opponent gets the other.
+  // The server only allows the owner, and only before match day.
+  const chooseSide = async (sessionId, matchId, chosenTeamId) => {
+    const r = await api.post('/game/match-choice', { sessionId, matchId, chosenTeamId })
+    setSession(r.data.session)
+    await fetchMatches(sessionId)
+    return r.data
+  }
+
   // Admin only (enforced server-side): record an official result when the live feed has none.
   const adminSetMatchResult = async (matchId, winnerTeamId, isDraw = false) => {
     const body = isDraw ? { matchId, isDraw: true } : { matchId, winnerTeamId }
@@ -176,7 +185,7 @@ export function GameProvider({ children }) {
       session, matches, loading, auctionLog, notifications,
       fetchSession, fetchMatches, createSession, joinSession,
       leaveSession,
-      selectHomeTeam, placeBid, buyTeam, finalizeAuction, processMatch,
+      selectHomeTeam, placeBid, buyTeam, finalizeAuction, processMatch, chooseSide,
       adminSetMatchResult, addNotification,
     }}>
       {children}

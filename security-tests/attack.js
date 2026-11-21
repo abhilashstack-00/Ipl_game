@@ -183,6 +183,9 @@ async function register(name) {
   r = await call('GET', '/game/admin/matches', C.token);
   record('Player reads the admin match overview', r.status === 403, `HTTP ${r.status} ${r.data?.error || ''}`);
 
+  r = await call('GET', '/game/leaderboard', C.token);
+  record('Player lists every account on the site (old leaderboard)', r.status === 404, `HTTP ${r.status}`);
+
   // --- Legit flows still work (functional regression) ----------------------
   const D = await register(`dina_${tag}`);
   const E = await register(`eli_${tag}`);

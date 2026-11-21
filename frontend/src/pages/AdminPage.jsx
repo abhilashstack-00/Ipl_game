@@ -1,23 +1,21 @@
 import React, { useCallback, useEffect, useState } from 'react'
+import { Lock, RefreshCw } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { useGame } from '../context/GameContext'
 import { api } from '../utils/api'
-import { TeamBadge, Modal, Alert, Spinner, SectionTitle, EmptyState } from '../components/UI'
+import { TeamChip, Modal, Alert, Spinner, PageHeader, SectionHeading, EmptyState } from '../components/UI'
 import { getTeam } from '../utils/iplData'
+import { formatDate } from '../utils/matches'
 
 // Admin-only page (the server enforces the role on every request; the checks here only decide what to show).
 // Official results are global, so the admin does not need to be in a game to use this page.
 
-const SOURCE_LABELS = {
-  schedule: 'Schedule',
-  'live-feed': 'Live feed',
-  admin: 'Admin',
-}
+const SOURCE_LABELS = { schedule: 'Schedule', 'live-feed': 'Live feed', admin: 'Admin' }
 
 function ago(ts) {
   if (!ts) return 'never'
   const secs = Math.max(0, Math.round((Date.now() - ts) / 1000))
-  if (secs < 60) return `${secs}s ago`
+  if (secs < 60) return `${secs} s ago`
   if (secs < 3600) return `${Math.round(secs / 60)} min ago`
   if (secs < 86400) return `${Math.round(secs / 3600)} h ago`
   return `${Math.round(secs / 86400)} days ago`
@@ -25,51 +23,36 @@ function ago(ts) {
 
 function outcomeText(match) {
   if (!match.outcome) return ''
-  if (match.outcome.isDraw) return 'Draw / no result'
+  if (match.outcome.isDraw) return 'No result'
   return `${getTeam(match.outcome.winnerTeamId).short} won`
 }
 
 function LiveFeedStatus({ live }) {
   if (!live) return null
   if (!live.enabled) {
-    return (
-      <Alert type="warning">
-        <strong>Live feed is off.</strong> Results only come from the built-in schedule and from you, so every played match will show up under "Needs a result".
-      </Alert>
-    )
+    return <Alert type="warning"><strong className="font-medium">Live feed is off.</strong> Results only come from the built-in schedule and from you, so every played match appears under "Needs a result".</Alert>
   }
   if (live.lastError) {
-    return (
-      <Alert type="danger">
-        <strong>Live feed error:</strong> {live.lastError}. Last successful update: {ago(live.lastSuccessTs)}. Until it recovers, enter results for finished matches below.
-      </Alert>
-    )
+    return <Alert type="danger"><strong className="font-medium">Live feed error:</strong> {live.lastError}. Last good update {ago(live.lastSuccessTs)}. Until it recovers, enter results for finished matches below.</Alert>
   }
   if (live.lastSuccessTs) {
-    return (
-      <Alert type="success">
-        <strong>Live feed is working.</strong> Last update {ago(live.lastSuccessTs)}. Most results will fill in by themselves; you only need to step in for matches listed under "Needs a result".
-      </Alert>
-    )
+    return <Alert type="success"><strong className="font-medium">Live feed is working.</strong> Last update {ago(live.lastSuccessTs)}. Most results fill in on their own; you only need to step in under "Needs a result".</Alert>
   }
-  return <Alert type="info">Live feed is on but has not fetched yet. Refresh in a minute.</Alert>
+  return <Alert type="info">The live feed is on but hasn't fetched yet. Refresh in a minute.</Alert>
 }
 
-function MatchRow({ match, today, children }) {
+function Row({ match, today, children }) {
   return (
-    <div className="rounded-xl p-4 border border-white/10 flex items-center gap-3 flex-wrap" style={{ background: 'rgba(255,255,255,0.03)' }}>
-      <TeamBadge teamId={match.team1} size="sm" />
-      <div className="flex-1 min-w-[140px]">
-        <div className="font-teko text-lg text-gray-200">
-          {getTeam(match.team1).short} vs {getTeam(match.team2).short}
-          {match.date === today && <span className="badge badge-gold ml-2 align-middle">Today</span>}
-        </div>
-        <div className="text-xs text-gray-500">{match.date} · {match.venue}</div>
-        {match.liveStatus && <div className="text-xs text-cyan-400 mt-0.5">Feed says: {match.liveStatus}</div>}
+    <li className="grid grid-cols-[minmax(0,1fr)] sm:grid-cols-[6rem_minmax(0,1fr)_auto] items-center gap-x-4 gap-y-2 px-4 py-3">
+      <div className="text-sm text-muted">{match.date === today ? <span className="tag-accent">Today</span> : formatDate(match.date)}</div>
+      <div className="flex items-center gap-2 min-w-0">
+        <TeamChip teamId={match.team1} />
+        <span className="text-xs text-muted">v</span>
+        <TeamChip teamId={match.team2} />
+        <span className="text-xs text-muted truncate hidden md:inline ml-1">{match.venue}</span>
       </div>
-      <TeamBadge teamId={match.team2} size="sm" />
-      <div className="flex flex-wrap gap-1.5 justify-end w-full sm:w-auto">{children}</div>
-    </div>
+      <div className="flex flex-wrap gap-1.5 sm:justify-end">{children}</div>
+    </li>
   )
 }
 
@@ -93,7 +76,7 @@ export default function AdminPage() {
       const r = await api.get('/game/admin/matches')
       setData(r.data)
     } catch (err) {
-      setLoadError(err.response?.data?.error || 'Could not load matches. The server may be waking up; try again in a minute.')
+      setLoadError(err.response?.data?.error || "Couldn't load matches. The server may be waking up; try again in a minute.")
     } finally {
       setLoading(false)
     }
@@ -104,11 +87,7 @@ export default function AdminPage() {
   }, [isAdmin, load])
 
   if (!isAdmin) {
-    return (
-      <div className="px-4 py-10">
-        <EmptyState icon="🔒" title="Admin only" subtitle="This page is for the site admin." />
-      </div>
-    )
+    return <EmptyState icon={Lock} title="Admin only">This page is for the site admin.</EmptyState>
   }
 
   const confirmResult = async () => {
@@ -116,11 +95,11 @@ export default function AdminPage() {
     setSaving(true)
     try {
       await adminSetMatchResult(pending.match.id, pending.winnerTeamId, pending.isDraw)
-      addNotification('Official result recorded', 'success')
+      addNotification('Official result saved', 'success')
       setPending(null)
       await load()
     } catch (err) {
-      addNotification(err.response?.data?.error || 'Failed to record result', 'danger')
+      addNotification(err.response?.data?.error || "Couldn't save the result", 'danger')
     } finally {
       setSaving(false)
     }
@@ -129,151 +108,126 @@ export default function AdminPage() {
   const matches = data?.matches || []
   const today = data?.today
   const needsResult = matches.filter(m => m.status === 'needs-result')
-  const decided = matches.filter(m => m.status === 'decided').reverse() // newest first
+  const decided = matches.filter(m => m.status === 'decided').reverse()
   const upcoming = matches.filter(m => m.status === 'upcoming')
   const decidedShown = showAllDecided ? decided : decided.slice(0, 8)
   const upcomingShown = showAllUpcoming ? upcoming : upcoming.slice(0, 5)
 
   return (
-    <div className="min-h-screen w-full px-3 sm:px-4 py-6 sm:py-8 animate-fade-in">
-      <div className="max-w-4xl mx-auto space-y-8">
-        <div className="flex items-center justify-between flex-wrap gap-3">
-          <div>
-            <SectionTitle className="text-3xl">🛡️ Admin: Match Results</SectionTitle>
-            <p className="text-gray-400 text-sm mt-1">
-              Results you enter here count for every game on the site. You do not need to be in a game.
-            </p>
-          </div>
-          <button className="btn-outline py-1.5 px-4 text-xs" onClick={load} disabled={loading} aria-label="Refresh match list">
-            {loading ? <Spinner size="sm" /> : '↻ Refresh'}
+    <div className="max-w-5xl mx-auto px-4 py-6 sm:py-8 fade-in">
+      <PageHeader
+        eyebrow="Admin"
+        title="Match results"
+        actions={
+          <button className="btn-secondary" onClick={load} disabled={loading} aria-label="Refresh match list">
+            {loading ? <Spinner size="sm" /> : <RefreshCw size={16} aria-hidden="true" />}Refresh
           </button>
-        </div>
+        }
+      >
+        Results you save here count for every game on the site. You don't need to be in a game.
+      </PageHeader>
 
+      <div className="space-y-3 mb-8">
         {loadError && <Alert type="danger">{loadError}</Alert>}
         {data && <LiveFeedStatus live={data.live} />}
+      </div>
 
-        {loading && !data ? (
-          <div className="flex justify-center py-16"><Spinner size="lg" /></div>
-        ) : data && (
-          <>
-            {/* Needs a result */}
-            <section aria-labelledby="needs-result-heading">
-              <h3 id="needs-result-heading" className="font-teko text-orange-400 text-2xl uppercase tracking-wider mb-3">
-                Needs a result ({needsResult.length})
-              </h3>
-              {needsResult.length === 0 ? (
-                <p className="text-gray-500 text-sm">Nothing to do. Every played match has a result.</p>
-              ) : (
-                <div className="space-y-2">
-                  {needsResult.map(match => (
-                    <MatchRow key={match.id} match={match} today={today}>
-                      <button
-                        className="btn-gold py-1.5 px-3 text-xs"
-                        onClick={() => setPending({ match, winnerTeamId: match.team1, isDraw: false })}
-                        aria-label={`Record ${getTeam(match.team1).name} as the winner`}
-                      >
-                        {getTeam(match.team1).short} won
-                      </button>
-                      <button
-                        className="btn-outline py-1.5 px-3 text-xs"
-                        onClick={() => setPending({ match, winnerTeamId: null, isDraw: true })}
-                        aria-label="Record a draw or no result"
-                      >
-                        Draw / No result
-                      </button>
-                      <button
-                        className="btn-gold py-1.5 px-3 text-xs"
-                        onClick={() => setPending({ match, winnerTeamId: match.team2, isDraw: false })}
-                        aria-label={`Record ${getTeam(match.team2).name} as the winner`}
-                      >
-                        {getTeam(match.team2).short} won
-                      </button>
-                    </MatchRow>
-                  ))}
-                </div>
-              )}
-            </section>
+      {loading && !data ? (
+        <div className="flex justify-center py-16 text-muted"><Spinner size="lg" /></div>
+      ) : data && (
+        <div className="space-y-10">
+          <section aria-labelledby="needs-heading">
+            <SectionHeading id="needs-heading" aside={`${needsResult.length} match${needsResult.length === 1 ? '' : 'es'}`}>Needs a result</SectionHeading>
+            {needsResult.length === 0 ? (
+              <p className="text-sm text-muted">Nothing to do. Every played match has a result.</p>
+            ) : (
+              <ul className="card divide-rows">
+                {needsResult.map(match => (
+                  <Row key={match.id} match={match} today={today}>
+                    <button className="btn-secondary btn-sm" onClick={() => setPending({ match, winnerTeamId: match.team1, isDraw: false })} aria-label={`Record ${getTeam(match.team1).name} as the winner`}>
+                      {getTeam(match.team1).short} won
+                    </button>
+                    <button className="btn-ghost btn-sm" onClick={() => setPending({ match, winnerTeamId: null, isDraw: true })} aria-label="Record a tie or no result">
+                      No result
+                    </button>
+                    <button className="btn-secondary btn-sm" onClick={() => setPending({ match, winnerTeamId: match.team2, isDraw: false })} aria-label={`Record ${getTeam(match.team2).name} as the winner`}>
+                      {getTeam(match.team2).short} won
+                    </button>
+                  </Row>
+                ))}
+              </ul>
+            )}
+          </section>
 
-            {/* Already decided */}
-            <section aria-labelledby="decided-heading">
-              <h3 id="decided-heading" className="font-teko text-green-400 text-2xl uppercase tracking-wider mb-3">
-                Already decided ({decided.length})
-              </h3>
-              {decided.length === 0 ? (
-                <p className="text-gray-500 text-sm">No results yet.</p>
-              ) : (
-                <div className="space-y-2">
+          <section aria-labelledby="decided-heading">
+            <SectionHeading id="decided-heading" aside={`${decided.length}`}>Already decided</SectionHeading>
+            {decided.length === 0 ? (
+              <p className="text-sm text-muted">No results yet.</p>
+            ) : (
+              <>
+                <ul className="card divide-rows">
                   {decidedShown.map(match => (
-                    <MatchRow key={match.id} match={match} today={today}>
-                      <span className="badge badge-green">{outcomeText(match)}</span>
-                      <span className="badge badge-blue">
+                    <Row key={match.id} match={match} today={today}>
+                      <span className="tag-win">{outcomeText(match)}</span>
+                      <span className="tag-neutral">
                         {SOURCE_LABELS[match.source] || match.source}
                         {match.source === 'admin' && match.enteredBy ? ` · ${match.enteredBy}` : ''}
                       </span>
-                    </MatchRow>
+                    </Row>
                   ))}
-                  {decided.length > decidedShown.length && (
-                    <button className="text-xs text-yellow-400 hover:underline" onClick={() => setShowAllDecided(true)}>
-                      Show all {decided.length}
-                    </button>
-                  )}
-                </div>
-              )}
-            </section>
+                </ul>
+                {decided.length > decidedShown.length && (
+                  <button className="btn-ghost btn-sm mt-2" onClick={() => setShowAllDecided(true)}>Show all {decided.length}</button>
+                )}
+              </>
+            )}
+          </section>
 
-            {/* Upcoming */}
-            <section aria-labelledby="upcoming-heading">
-              <h3 id="upcoming-heading" className="font-teko text-cyan-400 text-2xl uppercase tracking-wider mb-3">
-                Upcoming ({upcoming.length})
-              </h3>
-              {upcoming.length === 0 ? (
-                <p className="text-gray-500 text-sm">No upcoming matches.</p>
-              ) : (
-                <div className="space-y-2">
+          <section aria-labelledby="upcoming-heading">
+            <SectionHeading id="upcoming-heading" aside={`${upcoming.length}`}>Upcoming</SectionHeading>
+            {upcoming.length === 0 ? (
+              <p className="text-sm text-muted">No upcoming matches.</p>
+            ) : (
+              <>
+                <ul className="card divide-rows">
                   {upcomingShown.map(match => (
-                    <MatchRow key={match.id} match={match} today={today}>
-                      <span className="text-xs text-gray-500">Not played yet</span>
-                    </MatchRow>
+                    <Row key={match.id} match={match} today={today}>
+                      <span className="text-xs text-muted">Not played yet</span>
+                    </Row>
                   ))}
-                  {upcoming.length > upcomingShown.length && (
-                    <button className="text-xs text-yellow-400 hover:underline" onClick={() => setShowAllUpcoming(true)}>
-                      Show all {upcoming.length}
-                    </button>
-                  )}
-                </div>
-              )}
-            </section>
-          </>
-        )}
-      </div>
+                </ul>
+                {upcoming.length > upcomingShown.length && (
+                  <button className="btn-ghost btn-sm mt-2" onClick={() => setShowAllUpcoming(true)}>Show all {upcoming.length}</button>
+                )}
+              </>
+            )}
+          </section>
+        </div>
+      )}
 
-      {/* Confirmation: results cannot be changed through the app once saved */}
-      <Modal open={!!pending} onClose={() => !saving && setPending(null)} title="Confirm official result">
+      {/* Confirm first: results can't be changed through the app once saved */}
+      <Modal open={!!pending} onClose={() => !saving && setPending(null)} title="Save this result?">
         {pending && (
           <div className="space-y-4">
-            <div className="flex items-center justify-center gap-4">
-              <TeamBadge teamId={pending.match.team1} size="lg" />
-              <div className="font-teko text-3xl text-gray-500">VS</div>
-              <TeamBadge teamId={pending.match.team2} size="lg" />
+            <div className="flex items-center gap-3">
+              <TeamChip teamId={pending.match.team1} size="lg" />
+              <span className="text-muted">v</span>
+              <TeamChip teamId={pending.match.team2} size="lg" />
             </div>
-            <div className="text-center">
-              <div className="text-gray-400 text-sm">{pending.match.date} · {pending.match.venue}</div>
-              <div className="font-teko text-3xl text-yellow-400 mt-2">
-                {pending.isDraw ? 'Draw / No result' : `${getTeam(pending.winnerTeamId).name} won`}
+            <div>
+              <div className="eyebrow">{formatDate(pending.match.date)} · {pending.match.venue}</div>
+              <div className="display text-2xl mt-1">
+                {pending.isDraw ? 'Tie or no result' : `${getTeam(pending.winnerTeamId).name} won`}
               </div>
             </div>
             {pending.match.date === today && (
-              <Alert type="warning">This match is today. Only save once it has actually finished.</Alert>
+              <Alert type="warning">This match is today. Only save once it has finished.</Alert>
             )}
-            <Alert type="info">
-              This counts for every game on the site and <strong>cannot be changed afterwards</strong>. Check the real result first.
-            </Alert>
-            <div className="flex gap-3 justify-end">
-              <button className="btn-outline py-2 px-4 text-sm" onClick={() => setPending(null)} disabled={saving}>
-                Cancel
-              </button>
-              <button className="btn-gold py-2 px-5 text-sm" onClick={confirmResult} disabled={saving}>
-                {saving ? <Spinner size="sm" /> : 'Save result'}
+            <Alert type="info">It counts for every game on the site and <strong className="font-medium">can't be changed afterwards</strong>. Check the real result first.</Alert>
+            <div className="flex gap-3 justify-end pt-1">
+              <button className="btn-secondary" onClick={() => setPending(null)} disabled={saving}>Cancel</button>
+              <button className="btn-primary" onClick={confirmResult} disabled={saving}>
+                {saving ? <Spinner size="sm" label="Saving" /> : 'Save result'}
               </button>
             </div>
           </div>

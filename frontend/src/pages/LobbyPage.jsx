@@ -1,8 +1,16 @@
 import React, { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { LogIn, Plus } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { useGame } from '../context/GameContext'
-import { InviteCodeBox, Alert, Spinner, SectionTitle } from '../components/UI'
+import { InviteCodeBox, Alert, Spinner, PageHeader, SectionHeading } from '../components/UI'
+
+const STEPS = [
+  ['Start a game', 'Create a game and send the invite code to your opponent, or join theirs.'],
+  ['Pick a home team', 'Each of you takes one team for free. If you both want the same one, you bid for it.'],
+  ['Auction', 'The other teams come up one at a time for 20 seconds. Highest bid wins. 100 credits, five teams each.'],
+  ['Play the season', 'Points come from the real IPL results whenever your teams play theirs.'],
+]
 
 export default function LobbyPage() {
   const { user } = useAuth()
@@ -15,7 +23,7 @@ export default function LobbyPage() {
   const [joining, setJoining] = useState(false)
   const waitingForOpponent = session?.session?.status === 'waiting'
 
-  // Already has a session — redirect appropriately
+  // Already in a game: go to the right screen.
   React.useEffect(() => {
     if (session) {
       const status = session.session?.status
@@ -32,166 +40,109 @@ export default function LobbyPage() {
       const status = s?.session?.status
       if (status === 'active') navigate('/game/dashboard')
       else if (status === 'auction') navigate('/auction')
-      else if (status !== 'waiting') setCreateError('Session created, but navigation state was unexpected. Please refresh.')
+      else if (status !== 'waiting') setCreateError('The game was created but something unexpected happened. Refresh the page.')
     } catch (err) {
-      setCreateError(err.response?.data?.error || 'Failed to create game session')
+      setCreateError(err.response?.data?.error || "Couldn't create a game. Try again.")
     } finally { setCreating(false) }
   }
 
-  const handleJoin = async () => {
-    if (!inviteInput.trim()) return
+  const handleJoin = async (e) => {
+    e?.preventDefault()
+    if (!inviteInput.trim()) { setJoinError('Enter the invite code from your opponent.'); return }
     setJoinError('')
     setJoining(true)
     try {
       const s = await joinSession(inviteInput.trim().toUpperCase())
       if (s?.session?.status === 'auction') navigate('/auction')
     } catch (err) {
-      setJoinError(err.response?.data?.error || 'Failed to join session')
+      setJoinError(err.response?.data?.error || "Couldn't join that game. Check the code.")
     } finally { setJoining(false) }
   }
 
-  if (loading) return (
-    <div className="min-h-screen flex items-center justify-center">
-      <Spinner size="lg" />
-    </div>
+  if (loading && !session) return (
+    <div className="min-h-[60vh] flex items-center justify-center text-muted"><Spinner size="lg" /></div>
   )
 
   return (
-    <div
-      className="min-h-screen bg-cricket-pattern"
-      style={{ background: 'radial-gradient(ellipse at 20% 20%, rgba(255,107,53,0.07) 0%, transparent 50%), #0A1628' }}
-    >
-      <div className="max-w-4xl mx-auto px-4 py-12 animate-fade-in">
-        {/* Welcome banner */}
-        <div className="text-center mb-12">
-          <div
-            className="inline-block px-6 py-2 rounded-full mb-4 text-xs font-bold uppercase tracking-widest"
-            style={{ background: 'rgba(255,215,0,0.1)', border: '1px solid rgba(255,215,0,0.3)', color: '#FFD700' }}
-          >
-            Welcome, {user?.username}!
-          </div>
-          <h1 className="font-teko text-5xl text-yellow-400 uppercase tracking-widest leading-none">
-            Game Lobby
-          </h1>
-          <p className="text-gray-400 mt-2">Two managers. Ten teams. One IPL season.</p>
+    <div className="max-w-5xl mx-auto px-4 py-8 sm:py-12 fade-in">
+      <PageHeader eyebrow={`Signed in as ${user?.username}`} title={waitingForOpponent ? 'Waiting for your opponent' : 'Start a game'}>
+        {waitingForOpponent
+          ? 'Send this code to your opponent. The auction starts as soon as they join.'
+          : 'A game is you against one friend for the whole IPL season.'}
+      </PageHeader>
+
+      {waitingForOpponent ? (
+        <div className="max-w-md space-y-3">
+          <InviteCodeBox code={session?.session?.inviteCode} />
+          <p className="flex items-center gap-2 text-sm text-ink-2">
+            <span className="live-dot w-2 h-2 rounded-full bg-accent" aria-hidden="true" />
+            Waiting for them to join…
+          </p>
         </div>
-
-        {/* How to play */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-10">
-          {[
-            { icon: '💰', title: '100 CR', desc: 'Budget per player per game' },
-            { icon: '🔨', title: 'Auction', desc: 'Bid on IPL teams' },
-            { icon: '⚔️', title: 'Compete', desc: 'Win when your teams win' },
-            { icon: '🏆', title: 'Champion', desc: 'Most points wins' },
-          ].map(h => (
-            <div key={h.title} className="card p-4 text-center">
-              <div className="text-3xl mb-2">{h.icon}</div>
-              <div className="font-bold text-yellow-400 text-sm">{h.title}</div>
-              <div className="text-gray-500 text-xs mt-1">{h.desc}</div>
-            </div>
-          ))}
-        </div>
-
-        {/* Actions */}
-        {waitingForOpponent && (
-          <div className="mb-6">
-            <Alert type="warning">
-              ⏳ Session created. Waiting for player 2 to join with your invite code.
-            </Alert>
-            <div className="mt-3">
-              <InviteCodeBox code={session?.session?.inviteCode} />
-            </div>
-          </div>
-        )}
-
-        <div className="grid sm:grid-cols-2 gap-6">
-          {/* Create session */}
-          <div
-            className="rounded-2xl p-8"
-            style={{
-              background: 'rgba(18,32,64,0.8)',
-              border: '1px solid rgba(255,215,0,0.25)',
-              boxShadow: '0 8px 30px rgba(0,0,0,0.3)',
-            }}
-          >
-            <div className="text-4xl mb-3">🚀</div>
-            <h3 className="font-teko text-2xl text-yellow-400 uppercase tracking-wider mb-2">Create New Game</h3>
-            <p className="text-gray-400 text-sm mb-6">
-              Start a fresh game session and invite your opponent using the generated invite code.
-            </p>
-            {createError && (
-              <Alert type="danger">
-                {createError}
-              </Alert>
-            )}
-            <button
-              className="btn-gold w-full py-3 text-base"
-              onClick={handleCreate}
-              disabled={creating}
-            >
-              {creating ? <span className="flex items-center justify-center gap-2"><Spinner size="sm" /> Creating...</span> : '🏏 Create Game Session'}
+      ) : (
+        <div className="grid md:grid-cols-2 gap-4">
+          <section className="card p-6 flex flex-col" aria-labelledby="create-heading">
+            <h2 id="create-heading" className="display text-2xl">New game</h2>
+            <p className="text-sm text-ink-2 mt-2 mb-5 flex-1">You get an invite code to send to your opponent.</p>
+            {createError && <Alert type="danger" className="mb-4">{createError}</Alert>}
+            <button className="btn-primary w-full py-3" onClick={handleCreate} disabled={creating}>
+              {creating ? <Spinner size="sm" label="Creating game" /> : <><Plus size={18} aria-hidden="true" />Create game</>}
             </button>
-          </div>
+          </section>
 
-          {/* Join session */}
-          <div
-            className="rounded-2xl p-8"
-            style={{
-              background: 'rgba(18,32,64,0.8)',
-              border: '1px solid rgba(255,215,0,0.25)',
-              boxShadow: '0 8px 30px rgba(0,0,0,0.3)',
-            }}
-          >
-            <div className="text-4xl mb-3">🔗</div>
-            <h3 className="font-teko text-2xl text-yellow-400 uppercase tracking-wider mb-2">Join a Game</h3>
-            <p className="text-gray-400 text-sm mb-4">
-              Enter the 6-character invite code shared by your opponent to join their session.
-            </p>
-            {joinError && (
-              <Alert type="danger" className="mb-3">{joinError}</Alert>
-            )}
-            <div className="flex gap-2">
+          <section className="card p-6 flex flex-col" aria-labelledby="join-heading">
+            <h2 id="join-heading" className="display text-2xl">Join a game</h2>
+            <p className="text-sm text-ink-2 mt-2 mb-5 flex-1">Enter the 6-character code your opponent sent you.</p>
+            {joinError && <Alert type="danger" className="mb-4">{joinError}</Alert>}
+            <form onSubmit={handleJoin} className="flex gap-2">
+              <label htmlFor="invite" className="sr-only">Invite code</label>
               <input
-                className="input-field flex-1"
-                placeholder="Enter invite code"
+                id="invite"
+                className="input score text-xl tracking-[0.25em] uppercase flex-1 min-w-0"
+                placeholder="ABC234"
                 value={inviteInput}
                 onChange={e => setInviteInput(e.target.value.toUpperCase())}
                 maxLength={6}
-                onKeyDown={e => e.key === 'Enter' && handleJoin()}
-                style={{ textTransform: 'uppercase', letterSpacing: '0.2em', fontFamily: 'Teko', fontSize: '1.2rem' }}
+                autoComplete="off"
               />
-              <button
-                className="btn-gold px-5 py-3"
-                onClick={handleJoin}
-                disabled={joining || !inviteInput.trim()}
-              >
-                {joining ? <Spinner size="sm" /> : 'Join'}
+              <button type="submit" className="btn-secondary px-5" disabled={joining}>
+                {joining ? <Spinner size="sm" label="Joining" /> : <><LogIn size={18} aria-hidden="true" />Join</>}
               </button>
-            </div>
-          </div>
+            </form>
+          </section>
         </div>
+      )}
 
-        {/* Points system */}
-        <div className="mt-8 card p-6">
-          <SectionTitle className="text-lg mb-4">📋 Points System</SectionTitle>
-          <div className="grid sm:grid-cols-3 gap-4 text-sm">
-            <div className="flex items-center gap-3">
-              <span className="badge badge-green text-base px-3 py-1">+2</span>
-              <span className="text-gray-300">Your team wins a match</span>
-            </div>
-            <div className="flex items-center gap-3">
-              <span className="badge badge-gold text-base px-3 py-1">+1</span>
-              <span className="text-gray-300">Match ends in a draw/tie</span>
-            </div>
-            <div className="flex items-center gap-3">
-              <span className="badge badge-red text-base px-3 py-1"> 0</span>
-              <span className="text-gray-300">Your team loses</span>
-            </div>
-          </div>
-          <div className="mt-4 pt-4 border-t border-white/5 text-xs text-gray-500">
-            <strong className="text-yellow-400">Special Rule:</strong> If you own both teams in a match, the opponent gets the other team temporarily for that match. No free points!
-          </div>
-        </div>
+      <div className="grid md:grid-cols-[3fr_2fr] gap-8 mt-12">
+        <section aria-labelledby="how-heading">
+          <SectionHeading id="how-heading">How to play</SectionHeading>
+          <ol className="divide-rows border-y border-line">
+            {STEPS.map(([name, text], i) => (
+              <li key={name} className="flex gap-4 py-3.5">
+                <span className="score text-xl text-accent w-5 flex-shrink-0">{i + 1}</span>
+                <div>
+                  <div className="font-medium">{name}</div>
+                  <p className="text-sm text-ink-2">{text}</p>
+                </div>
+              </li>
+            ))}
+          </ol>
+        </section>
+
+        <section aria-labelledby="points-heading">
+          <SectionHeading id="points-heading">Points</SectionHeading>
+          <table className="w-full text-sm">
+            <tbody className="divide-rows border-y border-line">
+              <tr><td className="py-2.5">Your team beats theirs</td><td className="py-2.5 text-right"><span className="tag-win score text-sm">+2</span></td></tr>
+              <tr><td className="py-2.5">Tie or no result</td><td className="py-2.5 text-right"><span className="tag-draw score text-sm">+1 each</span></td></tr>
+              <tr><td className="py-2.5">Your team loses</td><td className="py-2.5 text-right"><span className="tag-neutral score text-sm">0</span></td></tr>
+            </tbody>
+          </table>
+          <p className="text-sm text-ink-2 mt-4">
+            If you own both teams in a match, you pick which side you play before match day and your opponent gets the other.
+            No free points.
+          </p>
+        </section>
       </div>
     </div>
   )

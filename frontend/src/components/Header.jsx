@@ -1,140 +1,113 @@
 import React from 'react'
-import { Link, useLocation, useNavigate } from 'react-router-dom'
+import { Link, NavLink, useNavigate } from 'react-router-dom'
+import { CalendarDays, DoorOpen, LayoutDashboard, LogOut, Moon, Shield, Sun, Swords } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { useGame } from '../context/GameContext'
+import { useTheme } from '../context/ThemeContext'
+import { sessionScore } from '../utils/matches'
+
+const GAME_LINKS = [
+  { to: '/game/dashboard', label: 'Dashboard', icon: LayoutDashboard },
+  { to: '/game/matches', label: 'Fixtures', icon: CalendarDays },
+  { to: '/game/h2h', label: 'Head-to-head', icon: Swords },
+]
+
+export function Wordmark({ className = '' }) {
+  return (
+    <span className={`display text-2xl whitespace-nowrap ${className}`}>
+      Strategy <span className="text-accent">Arena</span>
+    </span>
+  )
+}
+
+export function ThemeToggle() {
+  const { theme, toggleTheme } = useTheme()
+  const next = theme === 'dark' ? 'light' : 'dark'
+  return (
+    <button onClick={toggleTheme} className="btn-ghost p-2" aria-label={`Switch to ${next} theme`} title={`Switch to ${next} theme`}>
+      {theme === 'dark' ? <Sun size={18} aria-hidden="true" /> : <Moon size={18} aria-hidden="true" />}
+    </button>
+  )
+}
 
 export default function Header() {
   const { user, logout } = useAuth()
-  const { session, leaveSession } = useGame()
-  const location = useLocation()
+  const { session, matches, leaveSession } = useGame()
   const navigate = useNavigate()
 
-  const gameStatus = session?.session?.status
-  const canLeaveGame = user && !!session && (gameStatus === 'waiting' || gameStatus === 'auction' || gameStatus === 'active')
-  const mySessionPlayer = session?.players?.find(p => p.id === user?.id)
-  const displayCr = mySessionPlayer?.credits ?? user?.credits ?? 0
-
-  const navLinks = user && gameStatus === 'active' ? [
-    { to: '/game/dashboard', label: 'Dashboard', icon: '📊' },
-    { to: '/game/matches', label: 'Matches', icon: '🏏' },
-    { to: '/game/leaderboard', label: 'Leaderboard', icon: '🏆' },
-    { to: '/game/squads', label: 'Squads', icon: '👥' },
-  ] : []
+  const status = session?.session?.status
+  const inGame = !!user && status === 'active'
+  const canLeave = !!user && !!session && ['waiting', 'auction', 'active'].includes(status)
+  const opponent = session?.players?.find(p => p.id !== user?.id)
+  const score = sessionScore(matches, user?.id)
 
   const handleLogout = () => {
     logout()
     navigate('/login')
   }
 
-  const handleLeaveGame = async () => {
-    const ok = window.confirm('Leave current game session? This will end the current session for both players.')
-    if (!ok) return
+  const handleLeave = async () => {
+    if (!window.confirm('Leave this game? It ends the game for both players.')) return
     try {
       await leaveSession()
       navigate('/lobby')
-    } catch {
-      // No-op: existing global notifications handle request failures.
-    }
+    } catch { /* the request error shows as a notification */ }
   }
 
   return (
-    <header
-      className="sticky top-0 z-40 border-b border-yellow-400/30"
-      style={{
-        background: 'linear-gradient(135deg, #0A1628 0%, #122040 60%, #0A1628 100%)',
-        boxShadow: '0 4px 30px rgba(255,215,0,0.1)',
-      }}
-    >
-      {/* flex-wrap: on narrow phones the buttons drop to a second row instead of widening the page */}
-      <div className="max-w-7xl mx-auto px-4 py-3 flex flex-wrap items-center justify-between gap-2 sm:gap-4">
-        {/* Logo */}
-        <Link to={user ? '/lobby' : '/login'} className="flex-shrink-0">
-          <div className="font-teko text-2xl font-bold tracking-widest">
-            <span className="text-yellow-400">IPL </span>
-            <span className="text-orange-400">STRATEGY </span>
-            <span className="text-gray-400 text-base hidden sm:inline">ARENA</span>
-          </div>
+    <header className="sticky top-0 z-40 bg-bg/95 backdrop-blur-sm border-b border-line">
+      <div className="max-w-6xl mx-auto px-4 h-14 flex items-center justify-between gap-3">
+        <Link to={user ? '/lobby' : '/login'} aria-label="Strategy Arena home" className="min-w-0">
+          <Wordmark />
         </Link>
 
-        {/* Nav */}
-        {navLinks.length > 0 && (
-          <nav className="hidden sm:flex items-center gap-1">
-            {navLinks.map(link => (
-              <Link
-                key={link.to}
-                to={link.to}
-                className={`px-3 py-1.5 rounded-full text-xs font-bold uppercase tracking-wider transition-all ${
-                  location.pathname === link.to
-                    ? 'bg-yellow-400 text-ipl-deep-blue'
-                    : 'text-gray-400 hover:text-yellow-400 border border-transparent hover:border-yellow-400/30'
-                }`}
-              >
-                <span className="mr-1">{link.icon}</span>{link.label}
-              </Link>
-            ))}
-          </nav>
-        )}
-
-        {/* User info */}
-        {user && (
-          <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0 ml-auto">
-            {user.role === 'admin' && (
-              <Link
-                to="/admin"
-                aria-label="Open the admin page"
-                className={`py-1.5 px-2 sm:px-3 rounded-full text-xs font-bold uppercase tracking-wider transition-all ${
-                  location.pathname === '/admin'
-                    ? 'bg-yellow-400 text-ipl-deep-blue'
-                    : 'text-yellow-400 border border-yellow-400/40 hover:bg-yellow-400/10'
-                }`}
-              >
-                <span aria-hidden="true">🛡️</span><span className="hidden sm:inline ml-1">Admin</span>
-              </Link>
-            )}
-            {canLeaveGame && (
-              <button
-                onClick={handleLeaveGame}
-                className="btn-outline py-1.5 px-3 text-xs border-red-400/50 text-red-300 hover:bg-red-500/10"
-              >
-                Leave Game
+        <div className="flex items-center gap-1">
+          {user?.role === 'admin' && (
+            <NavLink
+              to="/admin"
+              className={({ isActive }) => `btn-ghost p-2 sm:px-3 ${isActive ? 'bg-inset text-ink' : ''}`}
+              aria-label="Admin"
+            >
+              <Shield size={18} aria-hidden="true" /><span className="hidden sm:inline">Admin</span>
+            </NavLink>
+          )}
+          <ThemeToggle />
+          {user && (
+            <>
+              <span className="hidden md:inline text-sm text-ink-2 px-2 max-w-[10rem] truncate">{user.username}</span>
+              {canLeave && (
+                <button onClick={handleLeave} className="btn-ghost p-2 sm:px-3" aria-label="Leave game">
+                  <DoorOpen size={18} aria-hidden="true" /><span className="hidden sm:inline">Leave game</span>
+                </button>
+              )}
+              <button onClick={handleLogout} className="btn-ghost p-2 sm:px-3" aria-label="Log out">
+                <LogOut size={18} aria-hidden="true" /><span className="hidden sm:inline">Log out</span>
               </button>
-            )}
-            <div className="hidden sm:block text-right">
-              <div className="text-yellow-400 font-bold text-sm leading-none">{user.username}</div>
-              <div className="text-gray-500 text-xs mt-0.5">💰 {displayCr} cr</div>
-            </div>
-            <div
-              className="w-9 h-9 rounded-full flex items-center justify-center font-teko font-bold text-lg text-ipl-deep-blue flex-shrink-0"
-              style={{ background: 'linear-gradient(135deg, #FFD700, #FF6B35)' }}
-            >
-              {(user.username?.[0] || '?').toUpperCase()}
-            </div>
-            <button
-              onClick={handleLogout}
-              className="btn-outline py-1.5 px-3 text-xs"
-            >
-              Logout
-            </button>
-          </div>
-        )}
+            </>
+          )}
+        </div>
       </div>
 
-      {/* Mobile nav */}
-      {navLinks.length > 0 && (
-        <div className="sm:hidden flex overflow-x-auto gap-1 px-4 pb-2">
-          {navLinks.map(link => (
-            <Link
-              key={link.to}
-              to={link.to}
-              className={`flex-shrink-0 px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider transition-all ${
-                location.pathname === link.to
-                  ? 'bg-yellow-400 text-ipl-deep-blue'
-                  : 'text-gray-400 border border-yellow-400/20'
-              }`}
-            >
-              {link.icon} {link.label}
-            </Link>
-          ))}
+      {inGame && (
+        <div className="max-w-6xl mx-auto px-4 flex items-center justify-between gap-3 border-t border-line sm:border-t-0">
+          <nav aria-label="Game" className="flex -mb-px overflow-x-auto">
+            {GAME_LINKS.map(({ to, label, icon: Icon }) => (
+              <NavLink
+                key={to}
+                to={to}
+                className={({ isActive }) => `flex items-center gap-1.5 px-3 py-2.5 text-sm whitespace-nowrap border-b-2 transition-colors ${
+                  isActive ? 'border-accent text-ink font-medium' : 'border-transparent text-muted hover:text-ink'
+                }`}
+              >
+                <Icon size={16} aria-hidden="true" />{label}
+              </NavLink>
+            ))}
+          </nav>
+          <div className="hidden sm:flex items-center gap-2 text-sm" aria-label={`Score: you ${score.me}, ${opponent?.username || 'opponent'} ${score.them}`}>
+            <span className="text-muted">You</span>
+            <span className="score text-xl">{score.me}<span className="text-muted mx-1">–</span>{score.them}</span>
+            <span className="text-muted truncate max-w-[8rem]">{opponent?.username}</span>
+          </div>
         </div>
       )}
     </header>
